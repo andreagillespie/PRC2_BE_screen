@@ -1,0 +1,396 @@
+---
+title: "ChIPseq_251016"
+author: "Andrea"
+date: "2025/10/19"
+output: html_document
+---
+
+fastq location: /pipeline/Runs/NextSeq/251016_VH01624_370_222GJWLNX/ProjectFolders/Project_Maria-Faleeva
+project directory: /dawson_genomics/Projects/PRC2/*/MF06_ChIP
+
+# set up project results dir and process (fastqc, trim, align, tdfs)
+```{bash}
+# from results dir
+cd /dawson_genomics/Projects/PRC2_BE_screen/results/MF06_ChIP/
+
+mkdir alignment
+mkdir fastqc
+mkdir trimmed_fastqs
+mkdir tdfs
+mkdir fastq_screen
+
+# need to use centos as with previous chip runs as trimgalore doesn't work on rhel
+for fq in /pipeline/Runs/NextSeq/251016_VH01624_370_222GJWLNX/ProjectFolders/Project_Maria-Faleeva/*/*_R1_001.fastq.gz
+do
+sbatch ../../scripts/MF06_ChIP/alignHg38_Centos.sbatch $fq 
+done
+
+module load py-multiqc/1.15-gcc-13.2.0
+multiqc .
+```
+
+# make bigwigs for all
+```{bash}
+mkdir bigwigs
+
+for bam in alignment/*sort.rmdup.bam
+do
+sbatch ../../scripts/MF06_ChIP/DeeptoolsBamCov.sbatch $bam 
+done
+```
+
+# peak calling (both narrow and broad) include bedgraph output for diff peaks
+```{bash}
+mkdir -p macs/narrowpeaks
+mkdir -p macs/broadpeaks
+
+for bam in alignment/k562-[em][ez][3h][2-]*sort.rmdup.bam
+do
+sbatch ../../scripts/MF06_ChIP/macs2.sbatch $bam alignment/input-k562-1x_S61.sort.rmdup.bam
+done
+
+for bam in alignment/k562-[es][uz][hz][1i]*sort.rmdup.bam
+do
+sbatch ../../scripts/MF06_ChIP/macs2.sbatch $bam alignment/input-k562-2x_S64.sort.rmdup.bam
+done
+
+for bam in alignment/ezh2-164-[em][ez][3h][2-]*sort.rmdup.bam
+do
+sbatch ../../scripts/MF06_ChIP/macs2.sbatch $bam alignment/input-ezh2-164-1x_S62.sort.rmdup.bam
+done
+
+for bam in alignment/ezh2-164-[es][uz][hz][1i]*sort.rmdup.bam
+do
+sbatch ../../scripts/MF06_ChIP/macs2.sbatch $bam alignment/input-ezh2-164-2x_S66.sort.rmdup.bam
+done
+
+for bam in alignment/164-EZHIP-KO-[em][ez][3h][2-]*sort.rmdup.bam
+do
+sbatch ../../scripts/MF06_ChIP/macs2.sbatch $bam alignment/input-5-1x_S63.sort.rmdup.bam
+done
+
+for bam in alignment/164-EZHIP-KO-[es][uz][hz][1i]*sort.rmdup.bam
+do
+sbatch ../../scripts/MF06_ChIP/macs2.sbatch $bam alignment/input-164-EZHIP-KO-2x_S67.sort.rmdup.bam
+done
+
+for bam in alignment/EZH2-WT-OE-[1m]*sort.rmdup.bam
+do
+sbatch ../../scripts/MF06_ChIP/macs2.sbatch $bam alignment/Input-EZH2-WT-OE_S77.sort.rmdup.bam
+done
+
+for bam in alignment/EZH2-677v-[1m]*sort.rmdup.bam
+do
+sbatch ../../scripts/MF06_ChIP/macs2.sbatch $bam alignment/Input-EZH2-677v_S78.sort.rmdup.bam
+done
+
+for bam in alignment/EZH2-WT-OE-2*sort.rmdup.bam
+do
+sbatch ../../scripts/MF06_ChIP/macs2.sbatch $bam alignment/EZH2-WT-2xInput_S86.sort.rmdup.bam
+done
+
+for bam in alignment/EZH2-677v-2x-*sort.rmdup.bam
+do
+sbatch ../../scripts/MF06_ChIP/macs2.sbatch $bam alignment/EZH2-677v-2xinput_S90.sort.rmdup.bam
+done
+```
+
+# Load R libraries and set paths
+```{r}
+library(data.table)
+library(ChIPseeker)
+library(TxDb.Hsapiens.UCSC.hg38.knownGene)
+
+project.dir <- "/dawson_genomics/Projects/PRC2_BE_screen/results/MF06_ChIP"
+align.dir <- file.path(project.dir, "alignment")
+peaks.dir <- file.path(project.dir, "macs/broadpeaks")
+res.dir <- file.path(project.dir, "results")
+bed.dir <- file.path(project.dir, "bed_files")
+```
+
+# make a bed file of the EED KO score genes for heatmaps
+```{r}
+eedko.genes <- scan(
+  "/dawson_genomics/Projects/PRC2_BE_screen/manuscript/results/christina_marian_eed_ko_gene_module.txt",
+  what = "character"
+  )
+
+dt.bed <- fread("/data/reference/dawson_labs/bed_files/Hg38/Hg38_MANE_ProteinCoding.bed")
+
+eedko.bed <- dt.bed[which(dt.bed$V4 %in% eedko.genes), ]
+
+write.table(
+  eedko.bed,
+  file.path(bed.dir, "EEDKO_genes.bed"),
+  sep = "\t",
+  col.names = FALSE,
+  row.names = FALSE,
+  quote = FALSE
+)
+```
+
+
+# make heatmaps for each mark over EED KO genes
+```{bash}
+sbatch ../../scripts/MF06_ChIP/DTMatrix_K27me3_EEDKOgenes_GR.sbatch
+sbatch ../../scripts/MF06_ChIP/DTMatrix_EZH2_EEDKOgenes_GR.sbatch
+sbatch ../../scripts/MF06_ChIP/DTMatrix_SUZ12_EEDKOgenes_GR.sbatch
+sbatch ../../scripts/MF06_ChIP/DTMatrix_EZHIP_EEDKOgenes_GR.sbatch
+```
+
+# apparently the me3s have a spike-in, so aligning those to drosophila
+```{bash}
+for fq in /pipeline/Runs/NextSeq/251016_VH01624_370_222GJWLNX/ProjectFolders/Project_Maria-Faleeva/Sample*me3*/*_R1_001.fastq.gz
+do
+sbatch ../../scripts/MF06_ChIP/alignBDGP6.sbatch $fq 
+done
+```
+
+# call peaks on combined repsfor K562 me3s 
+```{bash}
+sbatch ../../scripts/MF06_ChIP/macs2.sbatch \
+  alignment/k562-me3-r1_S54.sort.rmdup.bam \
+  alignment/k562-me3-r2_S65.sort.rmdup.bam \
+  alignment/input-k562-1x_S61.sort.rmdup.bam \
+  k562-me3
+```
+
+# get bam stats for spike in 
+```{bash}
+module load samtools/1.19.2-gcc-13.2.0
+
+for bam in alignment/*_Dm.sort.rmdup.bam
+do
+echo $bam >> alignment/DmBamFlagstat.txt
+samtools flagstat $bam >> alignment/DmBamFlagstat.txt
+done
+```
+
+# collate DM counts, use lib sizes to get scale factor for bigwigs
+```{r}
+dm.stat <- read.table(file.path(align.dir, "DmBamFlagstat.txt"), header = FALSE, fill = TRUE)
+dm.files <- dm.stat[grep("Dm.sort.rmdup.bam",dm.stat$V1), 1]
+dm.reads <- dm.stat[grep("total", t(dm.stat$V5)), 1]
+
+# make text file with bam names and scale factors to use for deeptools
+# scale factor for each is 10000000/Dm reads
+bam.sf <- cbind(gsub("_Dm.sort.rmdup.bam", ".sort.rmdup.bam", dm.files), 10000000/as.numeric(dm.reads))
+write.table(
+  bam.sf,
+  file.path(align.dir, "bam_sf.txt"),
+  sep = ":",
+  col.names = FALSE,
+  row.names = FALSE,
+  quote = FALSE
+)
+bam.sf
+```
+
+# make bigwigs norm by spike-in
+```{bash}
+while read -r line
+do
+IFS=: read -r bam sf <<< $line
+sbatch ../../scripts/MF06_ChIP/DeeptoolsBamCovDm.sbatch $bam $sf
+done < alignment/bam_sf.txt
+```
+
+# make the EEDKO gene heatmap w/Dm norm bigwigs
+```{bash}
+sbatch ../../scripts/MF06_ChIP/DTMatrix_K27me3_DmNorm_EEDKOgenes_GR.sbatch
+```
+
+# combine replicate bigwigs for heatmaps
+```{bash}
+sbatch ../../scripts/MF06_ChIP/bigwigAvg.sbatch k562-me3-r1_S54_Dmnorm.bw k562-me3-r2_S65_Dmnorm.bw k562-me3-Dmnorm
+sbatch ../../scripts/MF06_ChIP/bigwigAvg.sbatch ezh2-164-me3-r1_S76_Dmnorm.bw ezh2-164-me3-r2_S87_Dmnorm.bw ezh2-164-me3-Dmnorm
+sbatch ../../scripts/MF06_ChIP/bigwigAvg.sbatch 164-EZHIP-KO-me3-r1_S91_Dmnorm.bw 164-EZHIP-KO-me3-r2_S92_Dmnorm.bw 164-EZHIP-KO-me3-Dmnorm
+sbatch ../../scripts/MF06_ChIP/bigwigAvg.sbatch EZH2-WT-OE-me3-r1_S68_Dmnorm.bw EZH2-WT-OE-me3-r2_S69_Dmnorm.bw EZH2-WT-OE-me3-Dmnorm
+sbatch ../../scripts/MF06_ChIP/bigwigAvg.sbatch EZH2-677v-me3-r1_S72_Dmnorm.bw EZH2-677v-me3-r2_S73_Dmnorm.bw EZH2-677v-me3-Dmnorm
+
+sbatch ../../scripts/MF06_ChIP/bigwigAvg.sbatch k562-ezh2-r1_S93.RPGC.bw k562-ezh2-r2_S94.RPGC.bw k562-ezh2-RPGC
+sbatch ../../scripts/MF06_ChIP/bigwigAvg.sbatch ezh2-164-ezh2-r1_S95.RPGC.bw ezh2-164-ezh2-r2_S44.RPGC.bw ezh2-164-ezh2-RPGC
+sbatch ../../scripts/MF06_ChIP/bigwigAvg.sbatch 164-EZHIP-KO-ezh2-r1_S45.RPGC.bw 164-EZHIP-KO-ezh2-r2_S46.RPGC.bw 164-EZHIP-KO-ezh2-RPGC
+sbatch ../../scripts/MF06_ChIP/bigwigAvg.sbatch EZH2-WT-OE-1xEZH2-r1_S70.RPGC.bw EZH2-WT-OE-1xEZH2-r2_S71.RPGC.bw EZH2-WT-OE-1xEZH2-RPGC
+sbatch ../../scripts/MF06_ChIP/bigwigAvg.sbatch EZH2-WT-OE-2x-EZH2-r1_S84.RPGC.bw EZH2-WT-OE-2x-EZH2-r2_S85.RPGC.bw EZH2-WT-OE-2x-EZH2-RPGC
+sbatch ../../scripts/MF06_ChIP/bigwigAvg.sbatch EZH2-677v-1xEZH2-r1_S74.RPGC.bw EZH2-677v-1xEZH2-r2_S75.RPGC.bw EZH2-677v-1xEZH2-RPGC
+sbatch ../../scripts/MF06_ChIP/bigwigAvg.sbatch EZH2-677v-2x-EZH2-r1_S88.RPGC.bw EZH2-677v-2x-EZH2-R2_S89.RPGC.bw EZH2-677v-2x-EZH2-RPGC
+
+sbatch ../../scripts/MF06_ChIP/bigwigAvg.sbatch k562-suz12-r1_S47.RPGC.bw k562-suz12-r2_S48.RPGC.bw k562-suz12-RPGC
+sbatch ../../scripts/MF06_ChIP/bigwigAvg.sbatch ezh2-164-suz12-r1_S49.RPGC.bw ezh2-164-suz12-r2_S50.RPGC.bw ezh2-164-suz12-RPGC
+sbatch ../../scripts/MF06_ChIP/bigwigAvg.sbatch 164-EZHIP-KO-suz12-r1_S51.RPGC.bw 164-EZHIP-KO-suz12-r2_S52.RPGC.bw 164-EZHIP-KO-suz12-RPGC
+
+sbatch ../../scripts/MF06_ChIP/bigwigAvg.sbatch k562-ezhip-r1_S53.RPGC.bw k562-ezhip-r2_S55.RPGC.bw k562-ezhip-RPGC
+sbatch ../../scripts/MF06_ChIP/bigwigAvg.sbatch ezh2-164-ezhip-r1_S56.RPGC.bw ezh2-164-ezhip-r2_S57.RPGC.bw ezh2-164-ezhip-RPGC
+sbatch ../../scripts/MF06_ChIP/bigwigAvg.sbatch 164-EZHIP-KO-ezhip-r1_S58.RPGC.bw 164-EZHIP-KO-ezhip-r2_S59.RPGC.bw 164-EZHIP-KO-ezhip-RPGC
+```
+
+# annotate merged me3 peaks w/nearest gene for GR heatmaps
+# annotate peak calls and write out
+```{r}
+txdb <- TxDb.Hsapiens.UCSC.hg38.knownGene
+me3.peaks <- fread(file.path(peaks.dir, "k562-me3_peaks.broadPeak"))
+
+# annotate peaks calls
+peak.gr <- with(me3.peaks, GRanges(V1, IRanges(start = V2, end = V3)))
+seqlevelsStyle(peak.gr) <- "UCSC"
+anno.peak <- annotatePeak(peak.gr, TxDb = txdb, annoDb = "org.Hs.eg.db")
+peak.ann <- as.data.frame(anno.peak)
+
+# write out
+write.table(
+  peak.ann,
+  file.path(res.dir, "k562-me3_peaks_ann.txt"),
+  sep = "\t",
+  col.names = TRUE,
+  row.names = FALSE,
+  quote = FALSE
+)
+
+# get unique genes and make bed for heatmap, excluding distal intergenic
+peak.genes <- unique(peak.ann$SYMBOL[-which(peak.ann$annotation == "Distal Intergenic")])
+peak.genes.bed <- dt.bed[which(dt.bed$V4 %in% peak.genes), ]
+
+# write out
+write.table(
+  peak.genes.bed,
+  file.path(bed.dir, "K562_me3_peaks_genes.bed"),
+  sep = "\t",
+  col.names = FALSE,
+  row.names = FALSE,
+  quote = FALSE
+)
+```
+
+# make new heatmaps over these genes
+```{bash}
+sbatch ../../scripts/MF06_ChIP/DTMatrix_K27me3_DmNorm_K562me3peakGenes_GR.sbatch
+sbatch ../../scripts/MF06_ChIP/DTMatrix_K27me3_K562me3peakGenes_GR.sbatch
+
+# just for merged reps
+sbatch ../../scripts/MF06_ChIP/DTMatrix_K27me3_DmNorm_K562me3peakGenes_GR_merged.sbatch
+sbatch ../../scripts/MF06_ChIP/DTMatrix_EZH2_K562me3peakGenes_GR_merged.sbatch
+sbatch ../../scripts/MF06_ChIP/DTMatrix_SUZ12_K562me3peakGenes_GR_merged.sbatch
+sbatch ../../scripts/MF06_ChIP/DTMatrix_EZHIP_K562me3peakGenes_GR_merged.sbatch
+```
+
+# make heatmaps separating samples and w/o inputs
+```{bash}
+sbatch ../../scripts/MF06_ChIP/DTMatrix_EZH2_K562me3peakGenes_GR_WTOE677V.sbatch
+sbatch ../../scripts/MF06_ChIP/DTMatrix_K27me3_DmNorm_K562me3peakGenes_GR_WTOE677V.sbatch
+```
+
+# also merge non spike-in norm reps for me3
+```{bash}
+sbatch ../../scripts/MF06_ChIP/bigwigAvg.sbatch k562-me3-r1_S54.RPGC.bw k562-me3-r2_S65.RPGC.bw k562-me3-RPGC
+sbatch ../../scripts/MF06_ChIP/bigwigAvg.sbatch ezh2-164-me3-r1_S76.RPGC.bw ezh2-164-me3-r2_S87.RPGC.bw ezh2-164-me3-RPGC
+sbatch ../../scripts/MF06_ChIP/bigwigAvg.sbatch 164-EZHIP-KO-me3-r1_S91.RPGC.bw 164-EZHIP-KO-me3-r2_S92.RPGC.bw 164-EZHIP-KO-me3-RPGC
+sbatch ../../scripts/MF06_ChIP/bigwigAvg.sbatch EZH2-WT-OE-me3-r1_S68.RPGC.bw EZH2-WT-OE-me3-r2_S69.RPGC.bw EZH2-WT-OE-me3-RPGC
+sbatch ../../scripts/MF06_ChIP/bigwigAvg.sbatch EZH2-677v-me3-r1_S72.RPGC.bw EZH2-677v-me3-r2_S73.RPGC.bw EZH2-677v-me3-RPGC
+```
+
+# and make the above plots on RPGC norm me3
+```{bash}
+sbatch ../../scripts/MF06_ChIP/DTMatrix_K27me3_K562me3peakGenes_GR_WTOE677V.sbatch
+```
+
+# Mark wants to use chips from christina's data instead so rerunning plots on those
+```{bash}
+sbatch ../../scripts/MF06_ChIP/DTMatrix_WTOE677V_EZH2_ChristinaMe3peakGenes_GR_merged.sbatch
+sbatch ../../scripts/MF06_ChIP/DTMatrix_WTOE677V_K27me3_ChristinaMe3peakGenes_RP_merged.sbatch
+sbatch ../../scripts/MF06_ChIP/DTMatrix_WTOE677V_K27me3_DMnorm_ChristinaMe3peakGenes_RP_merged.sbatch
+```
+
+# merge bedgraph reps
+```{bash}
+# run from broadpeaks dir
+cd /dawson_genomics/Projects/PRC2_BE_screen/results/MF06_ChIP/macs/broadpeaks
+
+sbatch ../../../../scripts/MF06_ChIP/cmbreps.sbatch 164-EZHIP-KO-ezh2_merged_treat_pileup.bdg \
+  164-EZHIP-KO-ezh2-r1_S45_treat_pileup.bdg \
+  164-EZHIP-KO-ezh2-r2_S46_treat_pileup.bdg
+  
+sbatch ../../../../scripts/MF06_ChIP/cmbreps.sbatch 164-EZHIP-KO-ezhip_merged_treat_pileup.bdg \
+  164-EZHIP-KO-ezhip-r1_S58_treat_pileup.bdg \
+  164-EZHIP-KO-ezhip-r2_S59_treat_pileup.bdg
+  
+sbatch ../../../../scripts/MF06_ChIP/cmbreps.sbatch 164-EZHIP-KO-me3_merged_treat_pileup.bdg \
+  164-EZHIP-KO-me3-r1_S91_treat_pileup.bdg \
+  164-EZHIP-KO-me3-r2_S92_treat_pileup.bdg
+  
+sbatch ../../../../scripts/MF06_ChIP/cmbreps.sbatch 164-EZHIP-KO-suz12_merged_treat_pileup.bdg \
+  164-EZHIP-KO-suz12-r1_S51_treat_pileup.bdg \
+  164-EZHIP-KO-suz12-r2_S52_treat_pileup.bdg
+  
+sbatch ../../../../scripts/MF06_ChIP/cmbreps.sbatch ezh2-164-ezh2_merged_treat_pileup.bdg \
+  ezh2-164-ezh2-r1_S95_treat_pileup.bdg \
+  ezh2-164-ezh2-r2_S44_treat_pileup.bdg
+  
+sbatch ../../../../scripts/MF06_ChIP/cmbreps.sbatch ezh2-164-ezhip_merged_treat_pileup.bdg \
+  ezh2-164-ezhip-r1_S56_treat_pileup.bdg \
+  ezh2-164-ezhip-r2_S57_treat_pileup.bdg
+  
+sbatch ../../../../scripts/MF06_ChIP/cmbreps.sbatch ezh2-164-me3_merged_treat_pileup.bdg \
+  ezh2-164-me3-r1_S76_treat_pileup.bdg \
+  ezh2-164-me3-r2_S87_treat_pileup.bdg
+  
+sbatch ../../../../scripts/MF06_ChIP/cmbreps.sbatch ezh2-164-suz12_merged_treat_pileup.bdg \
+  ezh2-164-suz12-r1_S49_treat_pileup.bdg \
+  ezh2-164-suz12-r2_S50_treat_pileup.bdg
+  
+sbatch ../../../../scripts/MF06_ChIP/cmbreps.sbatch EZH2-677v-1xEZH2_merged_treat_pileup.bdg \
+  EZH2-677v-1xEZH2-r1_S74_treat_pileup.bdg \
+  EZH2-677v-1xEZH2-r2_S75_treat_pileup.bdg
+  
+sbatch ../../../../scripts/MF06_ChIP/cmbreps.sbatch EZH2-677v-2x-EZH2_merged_treat_pileup.bdg \
+  EZH2-677v-2x-EZH2-r1_S88_treat_pileup.bdg \
+  EZH2-677v-2x-EZH2-R2_S89_treat_pileup.bdg
+  
+sbatch ../../../../scripts/MF06_ChIP/cmbreps.sbatch EZH2-677v-me3_merged_treat_pileup.bdg \
+  EZH2-677v-me3-r1_S72_treat_pileup.bdg \
+  EZH2-677v-me3-r2_S73_treat_pileup.bdg
+  
+sbatch ../../../../scripts/MF06_ChIP/cmbreps.sbatch EZH2-WT-OE-1xEZH2_merged_treat_pileup.bdg \
+  EZH2-WT-OE-1xEZH2-r1_S70_treat_pileup.bdg \
+  EZH2-WT-OE-1xEZH2-r2_S71_treat_pileup.bdg
+  
+sbatch ../../../../scripts/MF07_ChIP/cmbreps.sbatch EZH2-WT-OE-2x-EZH2_merged_treat_pileup.bdg \
+  EZH2-WT-OE-2x-EZH2-r1_S84_treat_pileup.bdg \
+  EZH2-WT-OE-2x-EZH2-r2_S85_treat_pileup.bdg
+  
+sbatch ../../../../scripts/MF07_ChIP/cmbreps.sbatch EZH2-WT-OE-me3_merged_treat_pileup.bdg \
+  EZH2-WT-OE-me3-r1_S68_treat_pileup.bdg \
+  EZH2-WT-OE-me3-r2_S69_treat_pileup.bdg
+  
+sbatch ../../../../scripts/MF07_ChIP/cmbreps.sbatch k562-ezh2_merged_treat_pileup.bdg \
+  k562-ezh2-r1_S93_treat_pileup.bdg \
+  k562-ezh2-r2_S94_treat_pileup.bdg
+  
+sbatch ../../../../scripts/MF07_ChIP/cmbreps.sbatch k562-ezhip_merged_treat_pileup.bdg \
+  k562-ezhip-r1_S53_treat_pileup.bdg \
+  k562-ezhip-r2_S55_treat_pileup.bdg
+  
+sbatch ../../../../scripts/MF07_ChIP/cmbreps.sbatch k562-me3_merged_treat_pileup.bdg \
+  k562-me3-r1_S54_treat_pileup.bdg \
+  k562-me3-r2_S65_treat_pileup.bdg
+  
+sbatch ../../../../scripts/MF07_ChIP/cmbreps.sbatch k562-suz12_merged_treat_pileup.bdg \
+  k562-suz12-r1_S47_treat_pileup.bdg \
+  k562-suz12-r2_S48_treat_pileup.bdg
+```
+
+# previous experiment's inputs w/abherrant profiles were requenced in this run and
+# now appear clean, indicative of contamination. Further, inputs and EZHIP chips
+# in this experiment showed abherrant profiles where there should be none. This
+# is a clear indication of contamination and we cannot know which of the samples 
+# in either this experiment or the previous one (MF05_ChIP) were contaminated. I
+# have advised all that unfortunately both experiments should be excluded.
+
+# save session info
+```{r}
+sesh.info <- capture.output(sessionInfo())
+writeLines(
+  sesh.info,
+  file.path(project.dir, "session-info", paste0(Sys.Date(), "_ChIP_251013.txt"))
+)
+```

@@ -1,0 +1,38 @@
+#!/bin/bash
+ 
+#SBATCH --nodes=1
+#SBATCH --ntasks=1
+#SBATCH --mem-per-cpu=10G
+#SBATCH --time=0-4:00:00
+#SBATCH --output=logs/MACS%j.stdout
+#SBATCH --mail-user=andrea.gillespie@petermac.org
+#SBATCH --mail-type=END
+#SBATCH --job-name="MACS"
+#SBATCH --partition=rhel_short
+#SBATCH --container=/config/spack/containers/centos7/container.sif
+
+source /etc/profile.d/modules.sh
+
+module purge
+
+module load macs/2.1.1
+
+bname=`basename $1 .sort.rmdup.bam`
+
+##### altered below to accept 2 reps for merged peaks
+# narrow peaks calling with bedgraph outputs
+macs2 callpeak -t $1 $2 -c $3 \
+  -g hs \
+  -n $4 \
+  --outdir macs/narrowpeaks \
+  -B \
+  -q 0.05
+
+# broad peak calling with bedgraphs
+macs2 callpeak -t $1 $2 -c $3 \
+  --broad \
+  -g hs \
+  -n $4 \
+  --outdir macs/broadpeaks \
+  -B \
+  -q 0.05
