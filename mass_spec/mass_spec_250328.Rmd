@@ -1,0 +1,114 @@
+---
+title: "mass_spec_250328"
+author: "Andrea"
+date: "2025/04/14"
+output: html_document
+---
+
+input data: results from Ching-seng at Bio21 forwarded via email from Ali and 
+saved to /dawson_genomics/Projects/PRC2/data/mass_spec
+project directory: /dawson_genomics/Projects/PRC2/*/mass_spec
+
+The purpose of this script is to compile the separate results text files into a
+single file
+
+# set up R env
+```{r}
+library(data.table)
+
+data.dir <- "/dawson_genomics/Projects/PRC2_BE_screen/data/mass_spec"
+```
+
+# import each text file and combine, keeping specified columns only
+```{r}
+ms.files <- list.files(data.dir, full.names = TRUE)
+
+# get first file to init data table (starting w/ SUZ12 to follow sample order)
+ms.data <- fread(ms.files[4], check.names = TRUE)
+# keep only columns of interest
+keep <- which(grepl("Gene|iBAQ|LFQ", colnames(ms.data)))
+ms.data <- ms.data[, ..keep]
+# rename sample specific columns
+colnames(ms.data)[-(1:2)] <- paste0(gsub("proteinGroups.txt", "", basename(ms.files[4])), colnames(ms.data)[-(1:2)])
+# remove rows with no gene name or peptide id
+ms.data <- ms.data[-which(ms.data$Gene.names == "" & ms.data$iBAQ.peptides == 0), ]
+
+# loop through the rest w/similar treatment and merge together
+for(i in 1:3){
+  ms.file <- fread(ms.files[i], check.names = TRUE)
+  keep <- which(grepl("Gene|iBAQ|LFQ", colnames(ms.file)))
+  ms.file <- ms.file[, ..keep]
+  colnames(ms.file)[-(1:2)] <- paste0(gsub("proteinGroups.txt", "", basename(ms.files[i])), colnames(ms.file)[-(1:2)])
+  ms.file <- ms.file[-which(ms.file$Gene.names == "" & ms.file$iBAQ.peptides == 0), ]
+  ms.data <- merge(ms.data, ms.file, by = c("Gene.names", "iBAQ.peptides"), all = TRUE)
+}
+# rename IGG columns to match others
+colnames(ms.data) <- gsub(".IGG_", ".", colnames(ms.data))
+
+# write out table to send to Ali
+write.table(
+  ms.data,
+  file.path(data.dir, "all_proteinGroups.txt"),
+  sep = "\t",
+  col.names = TRUE,
+  row.names = FALSE,
+  quote = FALSE
+)
+```
+
+# get list of genes which do not have any IgG (>0) in >=2 samples, then subset 
+# original per protein files by gene list w/o IgG
+```{r}
+igg.table <- fread(file.path(data.dir, "IGG_proteinGroups.txt"), check.names = TRUE)
+# set var for cols of interest
+lfq.col <- which(grepl("LFQ.intensity.IGG_[23][890]", colnames(igg.table)))
+# keep only those with measureable expression in 1 or fewer samples
+keep <- which(rowSums(igg.table[, ..lfq.col] > 0) <= 1)
+no.igg.genes <- igg.table$Gene.names[keep]
+# remove blank gene names as these are not of interest
+no.igg.genes <- no.igg.genes[-which(no.igg.genes == "")]
+
+# now subset the individual files to these genes
+eed.table <- fread(file.path(data.dir, "EED_proteinGroups.txt"), check.names = TRUE)
+eed.sub.table <- eed.table[which(eed.table$Gene.names %in% no.igg.genes), ]
+write.table(
+  eed.sub.table,
+  file.path(data.dir, "EED_proteinGroups_noIGG.txt"),
+  sep = "\t",
+  col.names = TRUE,
+  row.names = FALSE,
+  quote = FALSE
+)
+
+ezh2.table <- fread(file.path(data.dir, "EZH2_proteinGroups.txt"), check.names = TRUE)
+ezh2.sub.table <- ezh2.table[which(ezh2.table$Gene.names %in% no.igg.genes), ]
+write.table(
+  ezh2.sub.table,
+  file.path(data.dir, "EZH2_proteinGroups_noIGG.txt"),
+  sep = "\t",
+  col.names = TRUE,
+  row.names = FALSE,
+  quote = FALSE
+)
+
+suz12.table <- fread(file.path(data.dir, "SUZ12_proteinGroups.txt"), check.names = TRUE)
+suz12.sub.table <- suz12.table[which(suz12.table$Gene.names %in% no.igg.genes), ]
+write.table(
+  suz12.sub.table,
+  file.path(data.dir, "SUZ12_proteinGroups_noIGG.txt"),
+  sep = "\t",
+  col.names = TRUE,
+  row.names = FALSE,
+  quote = FALSE
+)
+```
+
+
+# save session info
+```{r}
+sesh.info <- capture.output(sessionInfo())
+writeLines(
+  sesh.info,
+  file.path("/dawson_genomics/Projects/PRC2_BE_screen/session-info", paste0(Sys.Date(), "_mass_spec_250328.txt"))
+)
+```
