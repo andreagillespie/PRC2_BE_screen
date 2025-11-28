@@ -1,0 +1,458 @@
+---
+title: "ChIPseq_250623"
+author: "Andrea"
+date: "2025/06/24"
+output: html_document
+---
+
+fastq location: /pipeline/Runs/NextSeq/250623_VH01624_313_AACWGCTHV/ProjectFolders/Project_Maria-Faleeva
+project directory: /dawson_genomics/Projects/PRC2/*/MF04_ChIP
+
+# set up project results dir and process (fastqc, trim, align, tdfs)
+```{bash}
+# from results dir
+cd /dawson_genomics/Projects/PRC2_BE_screen/results/MF04_ChIP/
+
+mkdir alignment
+mkdir fastqc
+mkdir trimmed_fastqs
+mkdir tdfs
+mkdir fastq_screen
+
+for fq in /pipeline/Runs/NextSeq/250623_VH01624_313_AACWGCTHV/ProjectFolders/Project_Maria-Faleeva/*/*_R1_001.fastq.gz
+do
+sbatch ../../scripts/AM01_ChIP/alignHg38.sbatch $fq 
+done
+
+module load py-multiqc/1.15-gcc-13.2.0
+multiqc .
+```
+
+# make bigwigs for all
+```{bash}
+mkdir bigwigs
+
+for bam in alignment/*sort.rmdup.bam
+do
+sbatch ../../scripts/MF04_ChIP/DeeptoolsBamCov.sbatch $bam 
+done
+```
+
+# peak calling (both narrow and broad) include bedgraph output for diff peaks
+```{bash}
+mkdir -p macs/narrowpeaks
+mkdir -p macs/broadpeaks
+
+for bam in alignment/[^i]*[^t]-03-*sort.rmdup.bam
+do
+sbatch ../../scripts/MF04_ChIP/macs2.sbatch $bam alignment/k562-input-03-05_S24.sort.rmdup.bam
+done
+
+for bam in alignment/[^i]*[^t]-23-*sort.rmdup.bam
+do
+sbatch ../../scripts/MF04_ChIP/macs2.sbatch $bam alignment/k562-input-23-05_S39.sort.rmdup.bam
+done
+
+for bam in alignment/[^i]*[^t]-29-*sort.rmdup.bam
+do
+sbatch ../../scripts/MF04_ChIP/macs2.sbatch $bam alignment/k562-input-29-05_S48.sort.rmdup.bam
+done
+```
+
+# make heatmaps over TSS at protein coding genes for all PRC2 marks
+```{bash}
+mkdir results
+mkdir plots
+
+sbatch ../../scripts/MF04_ChIP/DTMatrix_EZH2_MANE_TSS.sbatch
+sbatch ../../scripts/MF04_ChIP/DTMatrix_EED_MANE_TSS.sbatch
+sbatch ../../scripts/MF04_ChIP/DTMatrix_SUZ12_MANE_TSS.sbatch
+```
+
+# process samples that needed to be re-demuxed by MGC
+```{bash}
+fqdir=/pipeline/Runs/NextSeq/250623_VH01624_313_AACWGCTHV/ProjectFolders/Project_Maria-Faleeva/*/
+sbatch ../../scripts/AM01_ChIP/alignHg38.sbatch \
+  ${fqdir}/eed102-eed-23-05_S33_R1_001.fastq.gz
+sbatch ../../scripts/AM01_ChIP/alignHg38.sbatch \
+  ${fqdir}/ezh2-156-me3-23-05_S25_R1_001.fastq.gz
+sbatch ../../scripts/AM01_ChIP/alignHg38.sbatch \
+  ${fqdir}/ezh2-164-suz12-29-05_S41_R1_001.fastq.gz
+```
+
+# now peak calling and bigwigs for straggler samples
+```{bash}
+bamdir=/dawson_genomics/Projects/PRC2_BE_screen/results/MF04_ChIP/alignment/
+sbatch ../../scripts/MF04_ChIP/macs2.sbatch \
+  ${bamdir}/eed102-eed-23-05_S33.sort.rmdup.bam \
+  ${bamdir}/k562-input-23-05_S39.sort.rmdup.bam
+sbatch ../../scripts/MF04_ChIP/macs2.sbatch \
+  ${bamdir}/ezh2-156-me3-23-05_S25.sort.rmdup.bam \
+  ${bamdir}/k562-input-23-05_S39.sort.rmdup.bam
+sbatch ../../scripts/MF04_ChIP/macs2.sbatch \
+  ${bamdir}/ezh2-164-suz12-29-05_S41.sort.rmdup.bam \
+  ${bamdir}/k562-input-29-05_S48.sort.rmdup.bam
+  
+sbatch ../../scripts/MF04_ChIP/DeeptoolsBamCov.sbatch \
+  ${bamdir}/eed102-eed-23-05_S33.sort.rmdup.bam
+sbatch ../../scripts/MF04_ChIP/DeeptoolsBamCov.sbatch \
+  ${bamdir}/ezh2-156-me3-23-05_S25.sort.rmdup.bam
+sbatch ../../scripts/MF04_ChIP/DeeptoolsBamCov.sbatch \
+  ${bamdir}/ezh2-164-suz12-29-05_S41.sort.rmdup.bam
+  
+
+# and make new multiqc w/ all samples
+module load py-multiqc/1.15-gcc-13.2.0
+multiqc .
+```
+
+# make heatmaps over TSS at MANE genes including new samples
+```{bash}
+# no new samples for EZH2 
+sbatch ../../scripts/MF04_ChIP/DTMatrix_EED_MANE_TSS.sbatch
+sbatch ../../scripts/MF04_ChIP/DTMatrix_SUZ12_MANE_TSS.sbatch
+```
+
+# now make heatmaps over intersection of k562 peaks and individual peaks
+# first merge K562 reps
+```{bash}
+# run from broadpeaks dir
+cd /dawson_genomics/Projects/PRC2_BE_screen/results/MF04_ChIP/macs/broadpeaks
+
+sbatch ../../../../scripts/MF04_ChIP/cmbreps.sbatch eed102-eed_merged_treat_pileup.bdg \
+  eed102-eed-03-06_S15_treat_pileup.bdg \
+  eed102-eed-23-05_S33_treat_pileup.bdg 
+  
+sbatch ../../../../scripts/MF04_ChIP/cmbreps.sbatch ezh2-156-eed_merged_treat_pileup.bdg \
+  ezh2-156-eed-03-06_S16_treat_pileup.bdg \
+  ezh2-156-eed-29-05_S45_treat_pileup.bdg 
+  
+sbatch ../../../../scripts/MF04_ChIP/cmbreps.sbatch ezh2-164-suz12_merged_treat_pileup.bdg \
+  ezh2-164-suz12-03-06_S11_treat_pileup.bdg \
+  ezh2-164-suz12-29-05_S41_treat_pileup.bdg
+  
+sbatch ../../../../scripts/MF04_ChIP/cmbreps.sbatch k562-ezh2_merged_treat_pileup.bdg \
+  k562-ezh2-03-05_S18_treat_pileup.bdg \
+  k562-ezh2-23-05_S35_treat_pileup.bdg 
+
+sbatch ../../../../scripts/MF04_ChIP/cmbreps.sbatch k562-me3_merged_treat_pileup.bdg \
+  k562-me3-03-06_S21_treat_pileup.bdg \
+  k562-me3-23-05_S25_treat_pileup.bdg 
+  
+sbatch ../../../../scripts/MF04_ChIP/cmbreps.sbatch k562-suz12_merged_treat_pileup.bdg \
+  k562-suz12-03-06_S50_treat_pileup.bdg \
+  k562-suz12-23-05_S28_treat_pileup.bdg 
+
+sbatch ../../../../scripts/MF04_ChIP/cmbreps.sbatch suz110-suz12_merged_treat_pileup.bdg \
+  suz110-suz12-03-06_S52_treat_pileup.bdg \
+  suz110-suz-23-05_S30_treat_pileup.bdg 
+
+sbatch ../../../../scripts/MF04_ChIP/cmbreps.sbatch suz95-suz12_merged_treat_pileup.bdg \
+  suz95-suz12-03-06_S51_treat_pileup.bdg \
+  suz95-suz12-23-05_S29_treat_pileup.bdg
+  
+sbatch ../../../../scripts/MF04_ChIP/cmbreps.sbatch ezh2-156-suz12_merged_treat_pileup.bdg \
+  ezh3-156-suz12-29-05_S41_treat_pileup.bdg \
+  ezh2-156-suz12-03-06_S54_treat_pileup.bdg
+  
+sbatch ../../../../scripts/MF04_ChIP/cmbreps.sbatch ezh2-164-eed_merged_treat_pileup.bdg \
+  ezh3-164-eed-29-05_S46_treat_pileup.bdg \
+  ezh2-164-eed-03-06_S17_treat_pileup.bdg
+  
+sbatch ../../../../scripts/MF04_ChIP/cmbreps.sbatch suz95-eed_merged_treat_pileup.bdg \
+  suz96-eed-03-06_S13_treat_pileup.bdg \
+  suz95-eed-23-05_S33_treat_pileup.bdg
+  
+# this version of macs only supports 2 reps so for this sample which has 3 reps
+# merge 2 to temp, then merge with other
+sbatch ../../../../scripts/MF04_ChIP/cmbreps.sbatch k562-eed_TEMP_merged_treat_pileup.bdg \
+  k562-eed-03-06_S12_treat_pileup.bdg \
+  k562-eed-23-05_S31_treat_pileup.bdg 
+
+sbatch ../../../../scripts/MF04_ChIP/cmbreps.sbatch k562-eed_merged_treat_pileup.bdg \
+  k562-eed_TEMP_merged_treat_pileup.bdg \
+  k562-eed-29-05_S44_treat_pileup.bdg
+  
+# also need to do control lambda files for each
+sbatch ../../../../scripts/MF04_ChIP/cmbreps.sbatch eed102-eed_merged_control_lambda.bdg \
+  eed102-eed-03-06_S15_control_lambda.bdg \
+  eed102-eed-23-05_S33_control_lambda.bdg 
+  
+sbatch ../../../../scripts/MF04_ChIP/cmbreps.sbatch ezh2-156-eed_merged_control_lambda.bdg \
+  ezh2-156-eed-03-06_S16_control_lambda.bdg \
+  ezh2-156-eed-29-05_S45_control_lambda.bdg 
+  
+sbatch ../../../../scripts/MF04_ChIP/cmbreps.sbatch ezh2-164-suz12_merged_control_lambda.bdg \
+  ezh2-164-suz12-03-06_S11_control_lambda.bdg \
+  ezh2-164-suz12-29-05_S41_control_lambda.bdg
+  
+sbatch ../../../../scripts/MF04_ChIP/cmbreps.sbatch k562-ezh2_merged_control_lambda.bdg \
+  k562-ezh2-03-05_S18_control_lambda.bdg \
+  k562-ezh2-23-05_S35_control_lambda.bdg 
+
+sbatch ../../../../scripts/MF04_ChIP/cmbreps.sbatch k562-me3_merged_control_lambda.bdg \
+  k562-me3-03-06_S21_control_lambda.bdg \
+  k562-me3-23-05_S25_control_lambda.bdg 
+  
+sbatch ../../../../scripts/MF04_ChIP/cmbreps.sbatch k562-suz12_merged_control_lambda.bdg \
+  k562-suz12-03-06_S50_control_lambda.bdg \
+  k562-suz12-23-05_S28_control_lambda.bdg 
+
+sbatch ../../../../scripts/MF04_ChIP/cmbreps.sbatch suz110-suz12_merged_control_lambda.bdg \
+  suz110-suz12-03-06_S52_control_lambda.bdg \
+  suz110-suz-23-05_S30_control_lambda.bdg 
+
+sbatch ../../../../scripts/MF04_ChIP/cmbreps.sbatch suz95-suz12_merged_control_lambda.bdg \
+  suz95-suz12-03-06_S51_control_lambda.bdg \
+  suz95-suz12-23-05_S29_control_lambda.bdg
+  
+sbatch ../../../../scripts/MF04_ChIP/cmbreps.sbatch ezh2-156-suz12_merged_control_lambda.bdg \
+  ezh3-156-suz12-29-05_S41_control_lambda.bdg \
+  ezh2-156-suz12-03-06_S54_control_lambda.bdg
+  
+sbatch ../../../../scripts/MF04_ChIP/cmbreps.sbatch ezh2-164-eed_merged_control_lambda.bdg \
+  ezh3-164-eed-29-05_S46_control_lambda.bdg \
+  ezh2-164-eed-03-06_S17_control_lambda.bdg
+  
+sbatch ../../../../scripts/MF04_ChIP/cmbreps.sbatch suz95-eed_merged_control_lambda.bdg \
+  suz96-eed-03-06_S13_control_lambda.bdg \
+  suz95-eed-23-05_S33_control_lambda.bdg
+  
+# this version of macs only supports 2 reps so for this sample which has 3 reps
+# merge 2 to temp, then merge with other
+sbatch ../../../../scripts/MF04_ChIP/cmbreps.sbatch k562-eed_TEMP_merged_control_lambda.bdg \
+  k562-eed-03-06_S12_control_lambda.bdg \
+  k562-eed-23-05_S31_control_lambda.bdg 
+
+sbatch ../../../../scripts/MF04_ChIP/cmbreps.sbatch k562-eed_merged_control_lambda.bdg \
+  k562-eed_TEMP_merged_control_lambda.bdg \
+  k562-eed-29-05_S44_control_lambda.bdg
+```
+
+# get diff peaks for each BE v K562
+```{bash}
+dname=macs/broadpeaks
+
+sbatch ../../scripts/MF04_ChIP/bdgdiff.sbatch \
+  ${dname}/eed102-eed_merged_treat_pileup.bdg \
+  ${dname}/eed102-eed_merged_control_lambda.bdg \
+  ${dname}/k562-eed_merged_treat_pileup.bdg \
+  ${dname}/k562-eed_merged_control_lambda.bdg \
+  EED-EED102vsK562
+
+sbatch ../../scripts/MF04_ChIP/bdgdiff.sbatch \
+  ${dname}/eed102-ezh2-03-05_S22_treat_pileup.bdg \
+  ${dname}/eed102-ezh2-03-05_S22_control_lambda.bdg \
+  ${dname}/k562-ezh2_merged_treat_pileup.bdg \
+  ${dname}/k562-ezh2_merged_control_lambda.bdg \
+  EZH2-EED102vsK562
+  
+sbatch ../../scripts/MF04_ChIP/bdgdiff.sbatch \
+  ${dname}/eed102-suz12-03-06_S53_treat_pileup.bdg \
+  ${dname}/eed102-suz12-03-06_S53_control_lambda.bdg \
+  ${dname}/k562-suz12_merged_treat_pileup.bdg \
+  ${dname}/k562-suz12_merged_control_lambda.bdg \
+  SUZ12-EED102vsK562
+  
+sbatch ../../scripts/MF04_ChIP/bdgdiff.sbatch \
+  ${dname}/ezh2-156-eed_merged_treat_pileup.bdg \
+  ${dname}/ezh2-156-eed_merged_control_lambda.bdg \
+  ${dname}/k562-eed_merged_treat_pileup.bdg \
+  ${dname}/k562-eed_merged_control_lambda.bdg \
+  EED-EZH2-156vsK562
+  
+sbatch ../../scripts/MF04_ChIP/bdgdiff.sbatch \
+  ${dname}/ezh2-156-ezh2-23-05_S36_treat_pileup.bdg \
+  ${dname}/ezh2-156-ezh2-23-05_S36_control_lambda.bdg \
+  ${dname}/k562-ezh2_merged_treat_pileup.bdg \
+  ${dname}/k562-ezh2_merged_control_lambda.bdg \
+  EZH2-EZH2-156vsK562
+  
+sbatch ../../scripts/MF04_ChIP/bdgdiff.sbatch \
+  ${dname}/ezh2-156-suz12_merged_treat_pileup.bdg \
+  ${dname}/ezh2-156-suz12_merged_control_lambda.bdg \
+  ${dname}/k562-suz12_merged_treat_pileup.bdg \
+  ${dname}/k562-suz12_merged_control_lambda.bdg \
+  SUZ12-EZH2-156vsK562
+  
+sbatch ../../scripts/MF04_ChIP/bdgdiff.sbatch \
+  ${dname}/ezh2-164-eed_merged_treat_pileup.bdg \
+  ${dname}/ezh2-164-eed_merged_control_lambda.bdg \
+  ${dname}/k562-eed_merged_treat_pileup.bdg \
+  ${dname}/k562-eed_merged_control_lambda.bdg \
+  EED-EZH2-164vsK562
+  
+sbatch ../../scripts/MF04_ChIP/bdgdiff.sbatch \
+  ${dname}/ezh2-164-ezh2-23-05_S37_treat_pileup.bdg \
+  ${dname}/ezh2-164-ezh2-23-05_S37_control_lambda.bdg \
+  ${dname}/k562-ezh2_merged_treat_pileup.bdg \
+  ${dname}/k562-ezh2_merged_control_lambda.bdg \
+  EZH2-EZH2-164vsK562
+  
+sbatch ../../scripts/MF04_ChIP/bdgdiff.sbatch \
+  ${dname}/ezh2-164-suz12_merged_treat_pileup.bdg \
+  ${dname}/ezh2-164-suz12_merged_control_lambda.bdg \
+  ${dname}/k562-suz12_merged_treat_pileup.bdg \
+  ${dname}/k562-suz12_merged_control_lambda.bdg \
+  SUZ12-EZH2-164vsK562
+  
+sbatch ../../scripts/MF04_ChIP/bdgdiff.sbatch \
+  ${dname}/suz110-eed-03-06_S14_treat_pileup.bdg \
+  ${dname}/suz110-eed-03-06_S14_control_lambda.bdg \
+  ${dname}/k562-eed_merged_treat_pileup.bdg \
+  ${dname}/k562-eed_merged_control_lambda.bdg \
+  EED-SUZ12-110vsK562
+  
+sbatch ../../scripts/MF04_ChIP/bdgdiff.sbatch \
+  ${dname}/suz110-ezh2-03-05_S20_treat_pileup.bdg \
+  ${dname}/suz110-ezh2-03-05_S20_control_lambda.bdg \
+  ${dname}/k562-ezh2_merged_treat_pileup.bdg \
+  ${dname}/k562-ezh2_merged_control_lambda.bdg \
+  EZH2-SUZ12-110vsK562
+  
+sbatch ../../scripts/MF04_ChIP/bdgdiff.sbatch \
+  ${dname}/suz110-suz12_merged_treat_pileup.bdg \
+  ${dname}/suz110-suz12_merged_control_lambda.bdg \
+  ${dname}/k562-suz12_merged_treat_pileup.bdg \
+  ${dname}/k562-suz12_merged_control_lambda.bdg \
+  SUZ12-SUZ12-110vsK562
+  
+sbatch ../../scripts/MF04_ChIP/bdgdiff.sbatch \
+  ${dname}/suz95-eed_merged_treat_pileup.bdg \
+  ${dname}/suz95-eed_merged_control_lambda.bdg \
+  ${dname}/k562-eed_merged_treat_pileup.bdg \
+  ${dname}/k562-eed_merged_control_lambda.bdg \
+  EED-SUZ12-95vsK562
+  
+sbatch ../../scripts/MF04_ChIP/bdgdiff.sbatch \
+  ${dname}/suz95-ezh2-03-05_S19_treat_pileup.bdg \
+  ${dname}/suz95-ezh2-03-05_S19_control_lambda.bdg \
+  ${dname}/k562-ezh2_merged_treat_pileup.bdg \
+  ${dname}/k562-ezh2_merged_control_lambda.bdg \
+  EZH2-SUZ12-95vsK562
+  
+sbatch ../../scripts/MF04_ChIP/bdgdiff.sbatch \
+  ${dname}/suz95-suz12_merged_treat_pileup.bdg \
+  ${dname}/suz95-suz12_merged_control_lambda.bdg \
+  ${dname}/k562-suz12_merged_treat_pileup.bdg \
+  ${dname}/k562-suz12_merged_control_lambda.bdg \
+  SUZ12-SUZ12-95vsK562
+```
+
+# make annobar plots to look at feature distribution of each peak set
+# load libraries and set paths
+```{r}
+library(data.table)
+library(ChIPseeker)
+library(TxDb.Hsapiens.UCSC.hg38.knownGene)
+
+project.dir <- "/dawson_genomics/Projects/PRC2_BE_screen/results/MF04_ChIP/"
+peaks.dir <- file.path(project.dir, "macs/broadpeaks")
+res.dir <- file.path(project.dir, "results")
+plots.dir <- file.path(project.dir, "plots")
+diff.dir <- file.path(project.dir, "bdgdiff")
+```
+
+# annotate peak calls and write out
+```{r}
+txdb <- TxDb.Hsapiens.UCSC.hg38.knownGene
+peak.files <- list.files(peaks.dir, pattern = "_peaks.broadPeak", full.names = TRUE)
+# remove me3 files as these did not work and will cause an error
+peak.files <- peak.files[-which(grepl("me3", peak.files))]
+
+file.names <- gsub("-[0-9][0-9]_S[0-9][0-9]_peaks.broadPeak", "", basename(peak.files))
+peak.ann <- list()
+for(peak.i in 1:length(peak.files)){
+  peak.file <- fread(peak.files[peak.i])
+  peak.gr <- with(peak.file, GRanges(V1, IRanges(start = V2, end = V3)))
+	seqlevelsStyle(peak.gr) <- "UCSC"
+	anno.peak <- annotatePeak(peak.gr, TxDb = txdb, annoDb = "org.Hs.eg.db")
+	peak.ann[[peak.i]] <- as.data.frame(anno.peak)
+	
+	# write out each annotation table
+	write.table(
+	  peak.ann[[peak.i]],
+	  file.path(res.dir, paste0(gsub(".broadPeak", "", basename(peak.files[[peak.i]])), "_ann.txt")),
+	  sep = "\t",
+	  col.names = TRUE,
+	  row.names = FALSE,
+	  quote = FALSE
+	)
+	
+	# make an annotation bar plot for each
+	pdf(
+	  file.path(plots.dir, paste0("annoBar_", file.names[peak.i], ".pdf")), 
+	  height = 4, 
+	  width = 8)
+	plotAnnoBar(anno.peak, title = file.names[peak.i])
+	dev.off()
+}
+names(peak.ann) <- file.names
+```
+
+# make bigwigs from bedgraphs for plotting with merged reps
+```{bash}
+for bdg in macs/broadpeaks/*_treat_pileup.bdg
+do
+sbatch ../../scripts/MF04_ChIP/bedgraphToBigwig.sbatch $bdg
+done
+```
+
+# make heatmaps for each BE over the diff down peaks for each mark
+```{bash}
+sbatch ../../scripts/MF04_ChIP/DTMatrix_EED102vsK562_downPeaks.sbatch
+sbatch ../../scripts/MF04_ChIP/DTMatrix_EZH2_156vsK562_downPeaks.sbatch
+sbatch ../../scripts/MF04_ChIP/DTMatrix_EZH2_164vsK562_downPeaks.sbatch
+sbatch ../../scripts/MF04_ChIP/DTMatrix_SUZ12_110vsK562_downPeaks.sbatch
+sbatch ../../scripts/MF04_ChIP/DTMatrix_SUZ12_95vsK562_downPeaks.sbatch
+```
+
+# annotate and make annobar plots for diff peaks
+```{r}
+diff.files <- list.files(diff.dir, pattern = "_cond[12].bed", full.names = TRUE)
+# simplify file names
+diff.names <- gsub("_c3.0_cond1.bed", "_up", basename(diff.files))
+diff.names <- gsub("_c3.0_cond2.bed", "_down", diff.names)
+diff.ann <- list()
+for(diff.i in 1:length(diff.files)){
+  diff.file <- fread(diff.files[diff.i], skip = 1)
+  diff.gr <- with(diff.file, GRanges(V1, IRanges(start = V2, end = V3)))
+	seqlevelsStyle(diff.gr) <- "UCSC"
+	anno.diff <- annotatePeak(diff.gr, TxDb = txdb, annoDb = "org.Hs.eg.db")
+	diff.ann[[diff.i]] <- as.data.frame(anno.diff)
+	
+	# write out each annotation table
+	write.table(
+	  diff.ann[[diff.i]],
+	  file.path(res.dir, paste0(diff.names[diff.i], "_ann.txt")),
+	  sep = "\t",
+	  col.names = TRUE,
+	  row.names = FALSE,
+	  quote = FALSE
+	)
+	
+	# make an annotation bar plot for each
+	pdf(
+	  file.path(plots.dir, paste0("annoBar_", diff.names[diff.i], ".pdf")), 
+	  height = 4, 
+	  width = 8
+	  )
+	plotAnnoBar(anno.diff, title = diff.names[diff.i])
+	dev.off()
+}
+names(diff.ann) <- diff.names
+```
+
+# make heatmaps with Christina's K27me3 and SUZ12 for comparison
+```{bash}
+sbatch ../../scripts/MF04_ChIP/DTMatrix_Sparbier_K27me3_SUZ12_MANE_TSS.sbatch
+```
+
+# save session info
+```{r}
+sesh.info <- capture.output(sessionInfo())
+writeLines(
+  sesh.info,
+  file.path(project.dir, "session-info", paste0(Sys.Date(), "_ChIP_250623.txt"))
+)
+```
