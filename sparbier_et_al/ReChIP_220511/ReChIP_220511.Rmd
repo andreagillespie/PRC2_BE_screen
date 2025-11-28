@@ -1,0 +1,58 @@
+---
+title: "ChIPseq_220511"
+author: "Andrea"
+date: "2025/10/28"
+output: html_document
+---
+
+# we are needing to use peaks called from Christina's me3 chip so I'm 
+# reprocessing those fastqs in the same manner as this project and to align to
+# Hg38 instead
+
+fastq dir: /pipeline/Archives/NextSeq/220511_NB501056_0799_AH335YBGXM/ProjectFolders/Project_Christina-Sparbier/
+project directory: /dawson_genomics/Projects/PRC2_BE_screen/*/sparbier_et_al/ReChIP_220511
+
+# set up project results dir and process (fastqc, trim, align, tdfs)
+```{bash}
+# from results dir
+cd /dawson_genomics/Projects/PRC2_BE_screen/results/sparbier_et_al/ReChIP_220511/
+
+mkdir alignment
+mkdir fastqc
+mkdir trimmed_fastqs
+mkdir tdfs
+
+# need to use centos as with previous chip runs as trimgalore doesn't work on rhel
+for fq in /pipeline/Archives/NextSeq/220511_NB501056_0799_AH335YBGXM/ProjectFolders/Project_Christina-Sparbier/*/*_R1_001.fastq.gz
+do
+sbatch ../../../scripts/sparbier_et_al/ReChIP_220511/alignHg38_Centos.sbatch $fq 
+done
+```
+
+# make bigwigs for all
+```{bash}
+mkdir bigwigs
+
+for bam in alignment/*[0-9].sort.rmdup.bam
+do
+sbatch ../../../scripts/sparbier_et_al/ReChIP_220511/DeeptoolsBamCov.sbatch $bam 
+done
+```
+
+# peak calling (both narrow and broad) include bedgraph output for diff peaks
+```{bash}
+mkdir -p macs/narrowpeaks
+mkdir -p macs/broadpeaks
+
+for bam in alignment/MHC-ReChIP2-K562-SINGLE-*sort.rmdup.bam
+do
+sbatch ../../../scripts/MF07_ChIP/macs2.sbatch $bam alignment/MHC-ReChIP2-K562-INPUT_S1.sort.rmdup.bam
+done
+```
+
+# run multiqc once all peak calling has finished
+```{bash}
+module load py-multiqc/1.15-gcc-13.2.0
+multiqc .
+```
+
