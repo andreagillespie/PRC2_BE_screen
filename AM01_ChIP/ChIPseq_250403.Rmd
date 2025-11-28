@@ -1,0 +1,32 @@
+---
+title: "ChIPseq_250403"
+author: "Andrea"
+date: "2025/04/07"
+output: html_document
+---
+
+fastq location: /pipeline/Runs/NextSeq/250403_VH01624_275_AACNK73HV/ProjectFolders/Project_Ali-Motazedian/
+project directory: /dawson_genomics/Projects/PRC2/*/AM01_ChIP
+
+# set up project results dir and process (fastqc, trim, align, tdfs)
+```{bash}
+# from results dir
+cd /dawson_genomics/Projects/PRC2_BE_screen/results/AM01_ChIP/
+
+mkdir alignment
+mkdir fastqc
+mkdir trimmed_fastqs
+mkdir tdfs
+mkdir fastq_screen
+
+for fq in /pipeline/Runs/NextSeq/250403_VH01624_275_AACNK73HV/ProjectFolders/Project_Ali-Motazedian/*/*_R1_001.fastq.gz
+do
+sbatch ../../scripts/AM01_ChIP/alignHg38.sbatch $fq 
+done
+
+module load py-multiqc/1.15-gcc-13.2.0
+multiqc .
+```
+
+# This experiment did not work as the binding was very non-specific all samples,
+# with one possible exception, mirror the inputs. It will be repeated
