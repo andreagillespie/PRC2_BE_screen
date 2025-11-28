@@ -1,0 +1,238 @@
+---
+title: "ChIPseq_250903"
+author: "Andrea"
+date: "2025/09/09"
+output: html_document
+---
+
+fastq location: /pipeline/Runs/NextSeq/250903_VH01624_344_AACY7FLHV/ProjectFolders/Project_Maria-Faleeva
+project directory: /dawson_genomics/Projects/PRC2/*/MF05_ChIP
+
+# set up project results dir and process (fastqc, trim, align, tdfs)
+```{bash}
+# from results dir
+cd /dawson_genomics/Projects/PRC2_BE_screen/results/MF05_ChIP/
+
+mkdir alignment
+mkdir fastqc
+mkdir trimmed_fastqs
+mkdir tdfs
+mkdir fastq_screen
+
+for fq in /pipeline/Runs/NextSeq/250903_VH01624_344_AACY7FLHV/ProjectFolders/Project_Maria-Faleeva/*/*_R1_001.fastq.gz
+do
+sbatch ../../scripts/MF05_ChIP/alignHg38.sbatch $fq 
+done
+
+##### there seems to be an issue running trimgalore on our rhel setup or spack
+##### needing to use the centos container to process, actually had a similar 
+##### issue w/MF04, so ran using AM01 (centos based) script instead
+for fq in /pipeline/Runs/NextSeq/250903_VH01624_344_AACY7FLHV/ProjectFolders/Project_Maria-Faleeva/*/*_R1_001.fastq.gz
+do
+sbatch ../../scripts/MF05_ChIP/alignHg38_Centos.sbatch $fq 
+done
+
+module load py-multiqc/1.15-gcc-13.2.0
+multiqc .
+```
+
+# make bigwigs for all
+```{bash}
+mkdir bigwigs
+
+for bam in alignment/*sort.rmdup.bam
+do
+sbatch ../../scripts/MF05_ChIP/DeeptoolsBamCov.sbatch $bam 
+done
+```
+
+# peak calling (both narrow and broad) include bedgraph output for diff peaks
+```{bash}
+mkdir -p macs/narrowpeaks
+mkdir -p macs/broadpeaks
+
+for bam in alignment/1*sort.rmdup.bam
+do
+sbatch ../../scripts/MF05_ChIP/macs2.sbatch $bam alignment/input-1_S38.sort.rmdup.bam
+done
+
+for bam in alignment/2*sort.rmdup.bam
+do
+sbatch ../../scripts/MF05_ChIP/macs2.sbatch $bam alignment/input-2_S39.sort.rmdup.bam
+done
+
+for bam in alignment/3*sort.rmdup.bam
+do
+sbatch ../../scripts/MF05_ChIP/macs2.sbatch $bam alignment/input-3_S40.sort.rmdup.bam
+done
+
+for bam in alignment/4*sort.rmdup.bam
+do
+sbatch ../../scripts/MF05_ChIP/macs2.sbatch $bam alignment/input-4_S41.sort.rmdup.bam
+done
+
+for bam in alignment/5*sort.rmdup.bam
+do
+sbatch ../../scripts/MF05_ChIP/macs2.sbatch $bam alignment/input-5_S42.sort.rmdup.bam
+done
+
+# for K562 samples use input from previous chip
+for bam in alignment/k*sort.rmdup.bam
+do
+sbatch ../../scripts/MF05_ChIP/macs2.sbatch $bam ../MF04_ChIP/alignment/k562-input-23-05_S39.sort.rmdup.bam
+done
+```
+
+# inputs for some reason look better than any of the samples, no idea why this
+# would be & it will make any analysis very difficult. Probs needs repeating.
+# we all agree that HA, FLAG & me1 did not work. Maria & Ollie are tryig to make
+# me2 & me3 work so I want to compare with Christina's data to be more confident
+# her data has been copied over to this project dir and now needs to be lifted over
+```{bash}
+# switch to dir for this dataset
+cd /dawson_genomics/Projects/PRC2_BE_screen/data/sparbier_et_al/CUTandTAG_220328_NB501056_0777_AHNGTWBGXL/
+
+~/.local/bin/CrossMap bigwig ~/hg19ToHg38.over.chain \
+  MHC-CSCT05-K562-NT2-H3K27me3_S5.RPGC.bw \
+  MHC-CSCT05-K562-NT2-H3K27me3_S5.RPGC.Hg38.bw
+  
+~/.local/bin/CrossMap bed ~/hg19ToHg38.over.chain \
+  MHC-CSCT05-K562-NT2-H3K27me3_S5_aligned_reads_peaks.broadPeak \
+  MHC-CSCT05-K562-NT2-H3K27me3_S5_aligned_reads_peaks.Hg38.broadPeak
+  
+~/.local/bin/CrossMap bed ~/hg19ToHg38.over.chain \
+  MHC-CSCT05-K562-NT2-H3K27me3_S5_aligned_reads_treat_pileup.bdg.gz \
+  MHC-CSCT05-K562-NT2-H3K27me3_S5_aligned_reads_treat_pileup.Hg38.bdg.gz
+```
+
+# k27me3 looks okay and there were peak calls in samples 1 & 5, none of the rest
+# of the samples had any peak calls for any mark; however, these peak calls are 
+# not trustworthy as they are called against the input which is not okay
+# k27me2 does not appear to have worked as there is no enrichment in any sample
+# make heatmaps over Christina's H3K27me3 peaks, include inputs and her sample
+```{bash}
+mkdir results
+mkdir plots
+
+sbatch ../../scripts/MF05_ChIP/DTMatrix_K27me3_ChristinasPeaks.sbatch
+sbatch ../../scripts/MF05_ChIP/DTMatrix_K27me2_ChristinasPeaks.sbatch
+```
+
+# also make GR heatmaps & profiles over MANE transcripts
+```{bash}
+sbatch ../../scripts/MF05_ChIP/DTMatrix_K27me3_MANE_GR.sbatch
+sbatch ../../scripts/MF05_ChIP/DTMatrix_K27me2_MANE_GR.sbatch
+```
+
+# also over K562_me3_r2 peaks
+```{bash}
+sbatch ../../scripts/MF05_ChIP/DTMatrix_K27me3_k562-me3-r2Peaks.sbatch
+sbatch ../../scripts/MF05_ChIP/DTMatrix_K27me2_k562-me3-r2Peaks.sbatch
+```
+
+# merge reps for me3
+```{bash}
+# run from broadpeaks dir
+cd /dawson_genomics/Projects/PRC2_BE_screen/results/MF05_ChIP/macs/broadpeaks
+
+sbatch ../../../../scripts/MF05_ChIP/cmbreps.sbatch 1-me3_merged_treat_pileup.bdg \
+  1-me3-r1_S14_treat_pileup.bdg \
+  1-me3-r2_S15_treat_pileup.bdg 
+  
+sbatch ../../../../scripts/MF05_ChIP/cmbreps.sbatch 2-me3_merged_treat_pileup.bdg \
+  2-me3-r1_S49_treat_pileup.bdg \
+  2-me3-r2_S50_treat_pileup.bdg 
+  
+sbatch ../../../../scripts/MF05_ChIP/cmbreps.sbatch 3-me3_merged_treat_pileup.bdg \
+  3-me3-r1_S20_treat_pileup.bdg \
+  3-me3-r2_S43_treat_pileup.bdg 
+  
+sbatch ../../../../scripts/MF05_ChIP/cmbreps.sbatch 4-me3_merged_treat_pileup.bdg \
+  4-me3-r1_S26_treat_pileup.bdg \
+  4-me3-r2_S27_treat_pileup.bdg 
+  
+sbatch ../../../../scripts/MF05_ChIP/cmbreps.sbatch 5-me3_merged_treat_pileup.bdg \
+  5-me3-r1_S34_treat_pileup.bdg \
+  5-me3-r2_S35_treat_pileup.bdg 
+```
+
+# look for contamination
+```{bash}
+for fq in /pipeline/Runs/NextSeq/250903_VH01624_344_AACY7FLHV/ProjectFolders/Project_Maria-Faleeva/*/*_R1_001.fastq.gz
+do
+sbatch ../../scripts/MF05_ChIP/fastq_screen.sbatch $fq
+done
+
+# re-multiqc w/screen
+module load py-multiqc/1.15-gcc-13.2.0
+multiqc .
+```
+
+# make DT plots over USC ENCODE peaks
+```{bash}
+sbatch ../../scripts/MF05_ChIP/DTMatrix_K27me2_ENCODE_k562-me3.sbatch
+sbatch ../../scripts/MF05_ChIP/DTMatrix_K27me3_ENCODE_k562-me3.sbatch
+```
+
+# copied over Christina's K27me3 chip from her rechip experiment bc they feel 
+# that her C&T K27me3 as well as ENCODE K27me3 from Broad and USC are not 
+# the best controls and so they need chip from Christina as well
+```{bash}
+# switch to dir for this dataset
+cd /dawson_genomics/Projects/PRC2_BE_screen/data/sparbier_et_al/ReChIP_220511_NB501056_0799_AH335YBGXM/
+
+~/.local/bin/CrossMap bed ~/hg19ToHg38.over.chain \
+  MHC-ReChIP2-K562-SINGLE-H3K27me3_S3_peaks.broadPeak \
+  MHC-ReChIP2-K562-SINGLE-H3K27me3_S3_peaks.Hg38.broadPeak
+  
+~/.local/bin/CrossMap bigwig ~/hg19ToHg38.over.chain \
+  MHC-ReChIP2-K562-SINGLE-H3K27me3_S3.bw \
+  MHC-ReChIP2-K562-SINGLE-H3K27me3_S3.Hg38
+```
+
+# inputs were resequenced with new experiments and they look clean so rerun peak
+# calling w/newly sequenced inputs
+```{bash}
+for bam in alignment/1*sort.rmdup.bam
+do
+sbatch ../../scripts/MF05_ChIP/macs2.sbatch $bam ../MF06_ChIP/alignment/Original-input-1_S79.sort.rmdup.bam
+done
+
+for bam in alignment/2*sort.rmdup.bam
+do
+sbatch ../../scripts/MF05_ChIP/macs2.sbatch $bam ../MF06_ChIP/alignment/Original-input-2_S80.sort.rmdup.bam
+done
+
+for bam in alignment/3*sort.rmdup.bam
+do
+sbatch ../../scripts/MF05_ChIP/macs2.sbatch $bam ../MF06_ChIP/alignment/Original-input-3_S81.sort.rmdup.bam
+done
+
+for bam in alignment/4*sort.rmdup.bam
+do
+sbatch ../../scripts/MF05_ChIP/macs2.sbatch $bam ../MF06_ChIP/alignment/Original-input-4_S82.sort.rmdup.bam
+done
+
+for bam in alignment/5*sort.rmdup.bam
+do
+sbatch ../../scripts/MF05_ChIP/macs2.sbatch $bam ../MF06_ChIP/alignment/Original-input-5_S83.sort.rmdup.bam
+done
+```
+
+# merge bigwig reps of me3 to make plots over peak genes from MF06 exp
+```{bash}
+sbatch ../../scripts/MF06_ChIP/bigwigAvg.sbatch 1-me3-r1_S14.RPGC.bw 1-me3-r2_S15.RPGC.bw EZH2-WT-RPGC
+sbatch ../../scripts/MF06_ChIP/bigwigAvg.sbatch 2-me3-r1_S49.RPGC.bw 2-me3-r2_S50.RPGC.bw EZH2-677V-RPGC
+sbatch ../../scripts/MF06_ChIP/bigwigAvg.sbatch 3-me3-r1_S20.RPGC.bw 3-me3-r2_S43.RPGC.bw EZH2-677V-WT-RPGC
+sbatch ../../scripts/MF06_ChIP/bigwigAvg.sbatch 4-me3-r1_S26.RPGC.bw 4-me3-r2_S27.RPGC.bw EZH2-677G-WT-RPGC
+sbatch ../../scripts/MF06_ChIP/bigwigAvg.sbatch 5-me3-r1_S34.RPGC.bw 5-me3-r2_S35.RPGC.bw EZH2-641-WT-RPGC
+sbatch ../../scripts/MF06_ChIP/bigwigAvg.sbatch k562-me3-r1_S47.RPGC.bw k562-me3-r2_S48.RPGC.bw k562-me3-RPGC
+
+# once the above have run submit the heatmap
+sbatch ../../scripts/MF05_ChIP/DTMatrix_K27me3_K562me3peakGenes_GR_merged.sbatch
+```
+
+# as resequencing of inputs were clean this is indicative of contamination in
+# these samples and we cannot know which are contaminated or not, therefore
+# we cannot trust the signal in any of these chips. I've advised these
+# chips should not be used.
