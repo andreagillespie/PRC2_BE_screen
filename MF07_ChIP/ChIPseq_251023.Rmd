@@ -1,0 +1,1514 @@
+---
+title: "ChIPseq_251023"
+author: "Andrea"
+date: "2025/10/24"
+output: html_document
+---
+
+fastq location: /pipeline/Runs/NextSeq/251023_VH01624_374_AAHJH5MM5/ProjectFolders/Project_Maria-Faleeva
+project directory: /dawson_genomics/Projects/PRC2/*/MF07_ChIP
+
+# set up project results dir and process (fastqc, trim, align, tdfs)
+```{bash}
+# from results dir
+cd /dawson_genomics/Projects/PRC2_BE_screen/results/MF07_ChIP/
+
+mkdir alignment
+mkdir fastqc
+mkdir trimmed_fastqs
+mkdir tdfs
+
+# need to use centos as with previous chip runs as trimgalore doesn't work on rhel
+for fq in /pipeline/Runs/NextSeq/251023_VH01624_374_AAHJH5MM5/ProjectFolders/Project_Maria-Faleeva/*/*_R1_001.fastq.gz
+do
+sbatch ../../scripts/MF07_ChIP/alignHg38_Centos.sbatch $fq 
+done
+
+# me3s have spike-in again so also align those to BDGP6
+for fq in /pipeline/Runs/NextSeq/251023_VH01624_374_AAHJH5MM5/ProjectFolders/Project_Maria-Faleeva/Sample*me3*/*_R1_001.fastq.gz
+do
+sbatch ../../scripts/MF07_ChIP/alignBDGP6.sbatch $fq 
+done
+```
+
+# make bigwigs for all
+```{bash}
+mkdir bigwigs
+
+for bam in alignment/*[0-9].sort.rmdup.bam
+do
+sbatch ../../scripts/MF07_ChIP/DeeptoolsBamCov.sbatch $bam 
+done
+```
+
+# get bam stats for spike in 
+```{bash}
+module load samtools/1.19.2-gcc-13.2.0
+
+for bam in alignment/*_Dm.sort.rmdup.bam
+do
+echo $bam >> alignment/DmBamFlagstat.txt
+samtools flagstat $bam >> alignment/DmBamFlagstat.txt
+done
+```
+
+# Load R libraries and set paths
+```{r}
+library(data.table)
+library(eulerr)
+library(ChIPseeker)
+library(TxDb.Hsapiens.UCSC.hg38.knownGene)
+library(ggplot2)
+
+project.dir <- "/dawson_genomics/Projects/PRC2_BE_screen/results/MF07_ChIP"
+align.dir <- file.path(project.dir, "alignment")
+plots.dir <- file.path(project.dir, "plots")
+res.dir <- file.path(project.dir, "results")
+peaks.dir <- file.path(project.dir, "macs/broadpeaks")
+diff.peaks.dir <- file.path(project.dir, "bdgdiff")
+```
+
+# collate DM counts, use lib sizes to get scale factor for bigwigs
+```{r}
+dm.stat <- read.table(file.path(align.dir, "DmBamFlagstat.txt"), header = FALSE, fill = TRUE)
+dm.files <- dm.stat[grep("Dm.sort.rmdup.bam",dm.stat$V1), 1]
+dm.reads <- dm.stat[grep("total", t(dm.stat$V5)), 1]
+
+# make text file with bam names and scale factors to use for deeptools
+# scale factor for each is 10000000/Dm reads
+bam.sf <- cbind(gsub("_Dm.sort.rmdup.bam", ".sort.rmdup.bam", dm.files), 10000000/as.numeric(dm.reads))
+write.table(
+  bam.sf,
+  file.path(align.dir, "bam_sf.txt"),
+  sep = ":",
+  col.names = FALSE,
+  row.names = FALSE,
+  quote = FALSE
+)
+bam.sf
+```
+
+# make bigwigs norm by spike-in for me3s
+```{bash}
+while read -r line
+do
+IFS=: read -r bam sf <<< $line
+sbatch ../../scripts/MF07_ChIP/DeeptoolsBamCovDm.sbatch $bam $sf
+done < alignment/bam_sf.txt
+```
+
+
+# peak calling (both narrow and broad) include bedgraph output for diff peaks
+```{bash}
+mkdir -p macs/narrowpeaks
+mkdir -p macs/broadpeaks
+
+for bam in alignment/eed19-*-[er]*sort.rmdup.bam
+do
+sbatch ../../scripts/MF07_ChIP/macs2.sbatch $bam alignment/eed19-2x-input_S21.sort.rmdup.bam
+done
+
+for bam in alignment/k562*sort.rmdup.bam
+do
+sbatch ../../scripts/MF07_ChIP/macs2.sbatch $bam alignment/eed19-2x-input_S21.sort.rmdup.bam
+done
+
+for bam in alignment/suz110-[em][ez][3h][2-]*[0-9].sort.rmdup.bam
+do
+sbatch ../../scripts/MF07_ChIP/macs2.sbatch $bam alignment/suz110-1x-input_S17.sort.rmdup.bam
+done
+
+for bam in alignment/suz110-ezhip-KO-[em][ez][3h][2-]*[0-9].sort.rmdup.bam
+do
+sbatch ../../scripts/MF07_ChIP/macs2.sbatch $bam alignment/suz110-ezhip-KO-1x-input_S18.sort.rmdup.bam
+done
+
+for bam in alignment/suz110-[es][uz][hz][1i][2p]-r*sort.rmdup.bam
+do
+sbatch ../../scripts/MF07_ChIP/macs2.sbatch $bam alignment/suz110-2x-input_S19.sort.rmdup.bam
+done
+
+for bam in alignment/suz110-ezhip-KO-[es][uz][hz][1i][2p]-r*sort.rmdup.bam
+do
+sbatch ../../scripts/MF07_ChIP/macs2.sbatch $bam alignment/suz110-ezhip-KO-2x-input_S20.sort.rmdup.bam
+done
+```
+
+# run multiqc once all peak calling has finished
+```{bash}
+module load py-multiqc/1.15-gcc-13.2.0
+multiqc .
+```
+
+# make heatmaps for each mark over MF06 me3 peak genes as for other chips
+```{bash}
+mkdir results
+mkdir plots 
+
+sbatch ../../scripts/MF07_ChIP/DTMatrix_me3_MF06K562me3peakGenes_GR.sbatch
+sbatch ../../scripts/MF07_ChIP/DTMatrix_EZH2_MF06K562me3peakGenes_GR.sbatch
+sbatch ../../scripts/MF07_ChIP/DTMatrix_SUZ12_MF06K562me3peakGenes_GR.sbatch
+sbatch ../../scripts/MF07_ChIP/DTMatrix_EZHIP_MF06K562me3peakGenes_GR.sbatch
+sbatch ../../scripts/MF07_ChIP/DTMatrix_EED_MF06K562me3peakGenes_GR.sbatch
+
+# also for Dm norm me3 chips
+sbatch ../../scripts/MF07_ChIP/DTMatrix_me3_DMnorm_MF06K562me3peakGenes_GR.sbatch
+```
+
+# these look good, combine replicate bigwigs for heatmaps
+```{bash}
+sbatch ../../scripts/MF07_ChIP/bigwigAvg.sbatch eed19-2x-eed-r1_S15.RPGC.bw eed19-2x-eed-r2_S16.RPGC.bw eed19-2x-eed-RPGC
+sbatch ../../scripts/MF07_ChIP/bigwigAvg.sbatch eed19-ezh2-r1_S10.RPGC.bw eed19-ezh2-r2_S12.RPGC.bw eed19-ezh2-RPGC
+
+sbatch ../../scripts/MF07_ChIP/bigwigAvg.sbatch k562-2x-eed-r1_S13.RPGC.bw k562-2x-eed-r2_S14.RPGC.bw k562-2x-eed-RPGC
+sbatch ../../scripts/MF07_ChIP/bigwigAvg.sbatch k562-2x-ezh2-r1_S8.RPGC.bw k562-2x-ezh2-r2_S9.RPGC.bw k562-2x-ezh2-RPGC
+
+sbatch ../../scripts/MF07_ChIP/bigwigAvg.sbatch suz110-ezh2-r1_S25.RPGC.bw suz110-ezh2-r2_S26.RPGC.bw suz110-ezh2-RPGC
+sbatch ../../scripts/MF07_ChIP/bigwigAvg.sbatch suz110-ezhip-r1_S4.RPGC.bw suz110-ezhip-r2_S5.RPGC.bw suz110-ezhip-RPGC
+sbatch ../../scripts/MF07_ChIP/bigwigAvg.sbatch suz110-me3-r1_S11_Dmnorm.bw suz110-me3-r2_S22_Dmnorm.bw suz110-me3-Dmnorm
+sbatch ../../scripts/MF07_ChIP/bigwigAvg.sbatch suz110-me3-r1_S11.RPGC.bw suz110-me3-r2_S22.RPGC.bw suz110-me3-RPGC
+sbatch ../../scripts/MF07_ChIP/bigwigAvg.sbatch suz110-suz12-r1_S29.RPGC.bw suz110-suz12-r2_S1.RPGC.bw suz110-suz12-RPGC
+
+sbatch ../../scripts/MF07_ChIP/bigwigAvg.sbatch suz110-ezhip-KO-ezh2-r1_S27.RPGC.bw suz110-ezhip-KO-ezh2-r2_S28.RPGC.bw suz110-ezhip-KO-ezh2-RPGC
+sbatch ../../scripts/MF07_ChIP/bigwigAvg.sbatch suz110-ezhip-KO-ezhip-r1_S6.RPGC.bw suz110-ezhip-KO-ezhip-r2_S7.RPGC.bw suz110-ezhip-KO-ezhip-RPGC
+sbatch ../../scripts/MF07_ChIP/bigwigAvg.sbatch suz110-ezhip-KO-me3-r1_S23_Dmnorm.bw suz110-ezhip-KO-me3-r2_S24_Dmnorm.bw suz110-ezhip-KO-me3-Dmnorm
+sbatch ../../scripts/MF07_ChIP/bigwigAvg.sbatch suz110-ezhip-KO-me3-r1_S23.RPGC.bw suz110-ezhip-KO-me3-r2_S24.RPGC.bw suz110-ezhip-KO-me3-RPGC
+sbatch ../../scripts/MF07_ChIP/bigwigAvg.sbatch suz110-ezhip-KO-suz12-r1_S2.RPGC.bw suz110-ezhip-KO-suz12-r2_S3.RPGC.bw suz110-ezhip-KO-suz12-RPGC
+```
+
+# make new heatmaps with merged reps
+```{bash}
+sbatch ../../scripts/MF07_ChIP/DTMatrix_EED_MF06K562me3peakGenes_GR_merged.sbatch
+sbatch ../../scripts/MF07_ChIP/DTMatrix_EZHIP_MF06K562me3peakGenes_GR_merged.sbatch
+sbatch ../../scripts/MF07_ChIP/DTMatrix_SUZ12_MF06K562me3peakGenes_GR_merged.sbatch
+sbatch ../../scripts/MF07_ChIP/DTMatrix_EZH2_MF06K562me3peakGenes_GR_merged.sbatch
+sbatch ../../scripts/MF07_ChIP/DTMatrix_me3_MF06K562me3peakGenes_GR_merged.sbatch
+sbatch ../../scripts/MF07_ChIP/DTMatrix_me3_DMnorm_MF06K562me3peakGenes_GR_merged.sbatch
+```
+ 
+ # make heatmaps for EED19 EED & EZH2 over Christina's peaks
+```{bash}
+sbatch ../../scripts/MF07_ChIP/DTMatrix_EED19_EED_Christiname3peakGenes_RP_merged.sbatch
+sbatch ../../scripts/MF07_ChIP/DTMatrix_EED19_EZH2_ChristinaMe3peakGenes_RP_merged.sbatch
+```
+
+# run differential peak analysis on SUZ110-EZHIPKO vs SUZ110 & EED19 vs K562
+# first need to merge bedgraph reps
+```{bash}
+# run from broadpeaks dir
+cd /dawson_genomics/Projects/PRC2_BE_screen/results/MF07_ChIP/macs/broadpeaks
+
+sbatch ../../../../scripts/MF07_ChIP/cmbreps.sbatch eed19-2x-eed_merged_treat_pileup.bdg \
+  eed19-2x-eed-r1_S15_treat_pileup.bdg \
+  eed19-2x-eed-r2_S16_treat_pileup.bdg
+  
+sbatch ../../../../scripts/MF07_ChIP/cmbreps.sbatch eed19-ezh2_merged_treat_pileup.bdg \
+  eed19-ezh2-r1_S10_treat_pileup.bdg \
+  eed19-ezh2-r2_S12_treat_pileup.bdg
+  
+sbatch ../../../../scripts/MF07_ChIP/cmbreps.sbatch k562-2x-eed_merged_treat_pileup.bdg \
+  k562-2x-eed-r1_S13_treat_pileup.bdg \
+  k562-2x-eed-r2_S14_treat_pileup.bdg
+  
+sbatch ../../../../scripts/MF07_ChIP/cmbreps.sbatch k562-2x-ezh2_merged_treat_pileup.bdg \
+  k562-2x-ezh2-r1_S8_treat_pileup.bdg \
+  k562-2x-ezh2-r2_S9_treat_pileup.bdg
+  
+sbatch ../../../../scripts/MF07_ChIP/cmbreps.sbatch suz110-ezh2_merged_treat_pileup.bdg \
+  suz110-ezh2-r1_S25_treat_pileup.bdg \
+  suz110-ezh2-r2_S26_treat_pileup.bdg
+  
+sbatch ../../../../scripts/MF07_ChIP/cmbreps.sbatch suz110-ezhip_merged_treat_pileup.bdg \
+  suz110-ezhip-r1_S4_treat_pileup.bdg \
+  suz110-ezhip-r2_S5_treat_pileup.bdg
+  
+sbatch ../../../../scripts/MF07_ChIP/cmbreps.sbatch suz110-me3_merged_treat_pileup.bdg \
+  suz110-me3-r1_S11_treat_pileup.bdg \
+  suz110-me3-r2_S22_treat_pileup.bdg
+  
+sbatch ../../../../scripts/MF07_ChIP/cmbreps.sbatch suz110-suz12_merged_treat_pileup.bdg \
+  suz110-suz12-r1_S29_treat_pileup.bdg \
+  suz110-suz12-r2_S1_treat_pileup.bdg
+  
+sbatch ../../../../scripts/MF07_ChIP/cmbreps.sbatch suz110-ezhip-KO-ezh2_merged_treat_pileup.bdg \
+  suz110-ezhip-KO-ezh2-r1_S27_treat_pileup.bdg \
+  suz110-ezhip-KO-ezh2-r2_S28_treat_pileup.bdg
+  
+sbatch ../../../../scripts/MF07_ChIP/cmbreps.sbatch suz110-ezhip-KO-ezhip_merged_treat_pileup.bdg \
+  suz110-ezhip-KO-ezhip-r1_S6_treat_pileup.bdg \
+  suz110-ezhip-KO-ezhip-r2_S7_treat_pileup.bdg
+  
+sbatch ../../../../scripts/MF07_ChIP/cmbreps.sbatch suz110-ezhip-KO-me3_merged_treat_pileup.bdg \
+  suz110-ezhip-KO-me3-r1_S23_treat_pileup.bdg \
+  suz110-ezhip-KO-me3-r2_S24_treat_pileup.bdg
+  
+sbatch ../../../../scripts/MF07_ChIP/cmbreps.sbatch suz110-ezhip-KO-suz12_merged_treat_pileup.bdg \
+  suz110-ezhip-KO-suz12-r1_S2_treat_pileup.bdg \
+  suz110-ezhip-KO-suz12-r2_S3_treat_pileup.bdg
+
+# also need to do control lambda files for each
+sbatch ../../../../scripts/MF07_ChIP/cmbreps.sbatch eed19-2x-eed_merged_control_lambda.bdg \
+  eed19-2x-eed-r1_S15_control_lambda.bdg \
+  eed19-2x-eed-r2_S16_control_lambda.bdg
+  
+sbatch ../../../../scripts/MF07_ChIP/cmbreps.sbatch eed19-ezh2_merged_control_lambda.bdg \
+  eed19-ezh2-r1_S10_control_lambda.bdg \
+  eed19-ezh2-r2_S12_control_lambda.bdg
+  
+sbatch ../../../../scripts/MF07_ChIP/cmbreps.sbatch k562-2x-eed_merged_control_lambda.bdg \
+  k562-2x-eed-r1_S13_control_lambda.bdg \
+  k562-2x-eed-r2_S14_control_lambda.bdg
+  
+sbatch ../../../../scripts/MF07_ChIP/cmbreps.sbatch k562-2x-ezh2_merged_control_lambda.bdg \
+  k562-2x-ezh2-r1_S8_control_lambda.bdg \
+  k562-2x-ezh2-r2_S9_control_lambda.bdg
+  
+sbatch ../../../../scripts/MF07_ChIP/cmbreps.sbatch suz110-ezh2_merged_control_lambda.bdg \
+  suz110-ezh2-r1_S25_control_lambda.bdg \
+  suz110-ezh2-r2_S26_control_lambda.bdg
+  
+sbatch ../../../../scripts/MF07_ChIP/cmbreps.sbatch suz110-ezhip_merged_control_lambda.bdg \
+  suz110-ezhip-r1_S4_control_lambda.bdg \
+  suz110-ezhip-r2_S5_control_lambda.bdg
+  
+sbatch ../../../../scripts/MF07_ChIP/cmbreps.sbatch suz110-me3_merged_control_lambda.bdg \
+  suz110-me3-r1_S11_control_lambda.bdg \
+  suz110-me3-r2_S22_control_lambda.bdg
+  
+sbatch ../../../../scripts/MF07_ChIP/cmbreps.sbatch suz110-suz12_merged_control_lambda.bdg \
+  suz110-suz12-r1_S29_control_lambda.bdg \
+  suz110-suz12-r2_S1_control_lambda.bdg
+  
+sbatch ../../../../scripts/MF07_ChIP/cmbreps.sbatch suz110-ezhip-KO-ezh2_merged_control_lambda.bdg \
+  suz110-ezhip-KO-ezh2-r1_S27_control_lambda.bdg \
+  suz110-ezhip-KO-ezh2-r2_S28_control_lambda.bdg
+  
+sbatch ../../../../scripts/MF07_ChIP/cmbreps.sbatch suz110-ezhip-KO-ezhip_merged_control_lambda.bdg \
+  suz110-ezhip-KO-ezhip-r1_S6_control_lambda.bdg \
+  suz110-ezhip-KO-ezhip-r2_S7_control_lambda.bdg
+  
+sbatch ../../../../scripts/MF07_ChIP/cmbreps.sbatch suz110-ezhip-KO-me3_merged_control_lambda.bdg \
+  suz110-ezhip-KO-me3-r1_S23_control_lambda.bdg \
+  suz110-ezhip-KO-me3-r2_S24_control_lambda.bdg
+  
+sbatch ../../../../scripts/MF07_ChIP/cmbreps.sbatch suz110-ezhip-KO-suz12_merged_control_lambda.bdg \
+  suz110-ezhip-KO-suz12-r1_S2_control_lambda.bdg \
+  suz110-ezhip-KO-suz12-r2_S3_control_lambda.bdg
+```
+
+# now do diff peak calling
+```{bash}
+# from experiment dir
+cd /dawson_genomics/Projects/PRC2_BE_screen/results/MF07_ChIP
+dname=macs/broadpeaks
+
+sbatch ../../scripts/MF07_ChIP/bdgdiff.sbatch \
+  ${dname}/eed19-2x-eed_merged_treat_pileup.bdg \
+  ${dname}/eed19-2x-eed_merged_control_lambda.bdg \
+  ${dname}/k562-2x-eed_merged_treat_pileup.bdg \
+  ${dname}/k562-2x-eed_merged_control_lambda.bdg \
+  EED-EED19vsK562
+  
+sbatch ../../scripts/MF07_ChIP/bdgdiff.sbatch \
+  ${dname}/eed19-ezh2_merged_treat_pileup.bdg \
+  ${dname}/eed19-ezh2_merged_control_lambda.bdg \
+  ${dname}/k562-2x-ezh2_merged_treat_pileup.bdg \
+  ${dname}/k562-2x-ezh2_merged_control_lambda.bdg \
+  EZH2-EED19vsK562
+  
+sbatch ../../scripts/MF07_ChIP/bdgdiff.sbatch \
+  ${dname}/suz110-ezhip-KO-ezh2_merged_treat_pileup.bdg \
+  ${dname}/suz110-ezhip-KO-ezh2_merged_control_lambda.bdg \
+  ${dname}/suz110-ezh2_merged_treat_pileup.bdg \
+  ${dname}/suz110-ezh2_merged_control_lambda.bdg \
+  EZH2-SUZ110-EZHIPKOvsSUZ110
+  
+sbatch ../../scripts/MF07_ChIP/bdgdiff.sbatch \
+  ${dname}/suz110-ezhip-KO-ezhip_merged_treat_pileup.bdg \
+  ${dname}/suz110-ezhip-KO-ezhip_merged_control_lambda.bdg \
+  ${dname}/suz110-ezhip_merged_treat_pileup.bdg \
+  ${dname}/suz110-ezhip_merged_control_lambda.bdg \
+  EZHIP-SUZ110-EZHIPKOvsSUZ110
+  
+sbatch ../../scripts/MF07_ChIP/bdgdiff.sbatch \
+  ${dname}/suz110-ezhip-KO-me3_merged_treat_pileup.bdg \
+  ${dname}/suz110-ezhip-KO-me3_merged_control_lambda.bdg \
+  ${dname}/suz110-me3_merged_treat_pileup.bdg \
+  ${dname}/suz110-me3_merged_control_lambda.bdg \
+  Me3-SUZ110-EZHIPKOvsSUZ110
+  
+sbatch ../../scripts/MF07_ChIP/bdgdiff.sbatch \
+  ${dname}/suz110-ezhip-KO-suz12_merged_treat_pileup.bdg \
+  ${dname}/suz110-ezhip-KO-suz12_merged_control_lambda.bdg \
+  ${dname}/suz110-suz12_merged_treat_pileup.bdg \
+  ${dname}/suz110-suz12_merged_control_lambda.bdg \
+  SUZ12-SUZ110-EZHIPKOvsSUZ110
+```
+
+# now make heatmaps over diff peaks for EED19 samples
+```{bash}
+sbatch ../../scripts/MF07_ChIP/DTMatrix_EED_EED19vK562diffpeaks_RP_merged.sbatch
+sbatch ../../scripts/MF07_ChIP/DTMatrix_EZH2_EED19vK562diffpeaks_RP_merged.sbatch
+```
+
+# make euler plots of diff peaks intersection
+```{r}
+# set groups for EED diff groups
+eed.eed19.fit <- euler(c("A" = 5164, "B" = 62, "A&B" = 357))
+
+# plot and write out
+pdf(file.path(plots.dir, "euler_EED_EED19vK562diffpeaks.pdf"))
+plot(
+  eed.eed19.fit, 
+  fills = list(fill = c("red", "steelblue4"), alpha = 0.5),
+  quantities = TRUE, 
+  legend = list(labels = c("up", "down")),
+  main = "EED19vK562 differential EED peaks"
+  )
+dev.off()
+
+# same for ezh2
+ezh2.eed19.fit <- euler(c("A" = 4873, "B" = 126, "A&B" = 650))
+
+pdf(file.path(plots.dir, "euler_EZH2_EED19vK562diffpeaks.pdf"))
+plot(
+  ezh2.eed19.fit, 
+  fills = list(fill = c("red", "steelblue4"), alpha = 0.5),
+  quantities = TRUE, 
+  legend = list(labels = c("up", "down")),
+  main = "EED19vK562 differential EZH2 peaks"
+  )
+dev.off()
+```
+
+# annotate up peaks and make annobar plots
+```{r}
+txdb <- TxDb.Hsapiens.UCSC.hg38.knownGene
+peak.files <- list.files(
+  diff.peaks.dir,
+  pattern = "-EED19vsK562_c3.0_cond1.bed", 
+  full.names = TRUE
+  )
+
+file.names <- gsub("_c3.0_cond1.bed", "", basename(peak.files))
+peak.ann <- list()
+for(peak.i in 1:length(peak.files)){
+  peak.file <- fread(peak.files[peak.i], skip = 1)
+  peak.gr <- with(peak.file, GRanges(V1, IRanges(start = V2, end = V3)))
+	seqlevelsStyle(peak.gr) <- "UCSC"
+	anno.peak <- annotatePeak(peak.gr, tssRegion = c(-2000, 2000), TxDb = txdb, annoDb = "org.Hs.eg.db")
+	peak.ann[[peak.i]] <- as.data.frame(anno.peak)
+	
+	# write out each annotation table
+	write.table(
+	  peak.ann[[peak.i]],
+	  file.path(res.dir, paste0(gsub("_c3.0_cond1.bed", "", basename(peak.files[[peak.i]])), "_UPpeaks_ann.txt")),
+	  sep = "\t",
+	  col.names = TRUE,
+	  row.names = FALSE,
+	  quote = FALSE
+	)
+	
+	# make an annotation bar plot for each
+	pdf(
+	  file.path(plots.dir, paste0("annoBar_", file.names[peak.i], "_UPpeaks.pdf")), 
+	  height = 4, 
+	  width = 8
+	  )
+	plotAnnoBar(anno.peak, title = paste0(file.names[peak.i], "_UPpeaks"))
+	dev.off()
+}
+names(peak.ann) <- file.names
+```
+
+# check the genes w/ these promotors to see if they are transcribed at steady state
+```{r}
+# read in counts from Christina's RNAseq data
+norm.counts <- fread("/dawson_genomics/Projects/PRC2_BE_screen/data/sparbier_et_al/RNAseq_200409_NB501056_0484_AHJMKYBGXF/norm-counts.csv")
+
+# get unique genes for promoters with increased enrichment for each mark
+eed.up.prom.peaks <- peak.ann$`EED-EED19vsK562`[which(substr(peak.ann$`EED-EED19vsK562`$annotation, 1, 8) == "Promoter"), ]
+eed.up.prom.genes <- unique(eed.up.prom.peaks$ENSEMBL)
+
+ezh2.up.prom.peaks <- peak.ann$`EZH2-EED19vsK562`[which(substr(peak.ann$`EZH2-EED19vsK562`$annotation, 1, 8) == "Promoter"), ]
+ezh2.up.prom.genes <- unique(ezh2.up.prom.peaks$ENSEMBL)
+
+# subset norm counts to these gene sets
+eed.up.gene.counts <- norm.counts[which(norm.counts$V1 %in% eed.up.prom.genes), ]
+ezh2.up.gene.counts <- norm.counts[which(norm.counts$V1 %in% ezh2.up.prom.genes), ]
+
+# make long dataframe of these counts for plotting
+counts.data <- data.frame(
+  "counts" = c(
+    log10(rowMeans(eed.up.gene.counts[, 2:4])), 
+    log10(rowMeans(ezh2.up.gene.counts[, 2:4])) 
+    ),
+  "mark" = c(
+    rep("EED", nrow(eed.up.gene.counts)), 
+    rep("EZH2", nrow(ezh2.up.gene.counts))
+    )
+)
+
+# make a violin of expression values
+pdf(file.path(plots.dir, "violin_expression_genes_promoter_EED19.pdf"))
+ggplot(counts.data, aes(y = counts, x = mark, fill = mark)) + 
+  geom_violin(position = "dodge", alpha = 0.8) +
+  scale_fill_manual(values = c("#3c0050", "#FF5000")) +
+  scale_color_manual(values = c("#3c0050", "#FF5000")) +
+  theme_bw()  +
+  xlab("Genes with an increase of mark(s) at promoter") +
+  ylab("log10(normalised counts)")
+dev.off()
+```
+
+# also look bivalent/K4/K27 Me status at these genes
+```{r}
+# load bivalent genes list and K4/K27 peaks sets
+bivalent.bed <- fread("/dawson_genomics/Projects/PRC2_BE_screen/data/sparbier_et_al/CSCT03_CAS_bivalent_genes_2kTSS.bed")
+peak.files <- list.files(
+  "/dawson_genomics/Projects/PRC2_BE_screen/results/sparbier_et_al/ReChIP_220511/macs/broadpeaks", 
+  pattern = "_peaks.broadPeak", 
+  full.names = TRUE
+  )
+
+# annotate genes to peaksets
+me.peak.ann <- list()
+for(peak.i in 1:length(peak.files)){
+  peak.file <- fread(peak.files[peak.i], skip = 1)
+  peak.gr <- with(peak.file, GRanges(V1, IRanges(start = V2, end = V3)))
+	seqlevelsStyle(peak.gr) <- "UCSC"
+	anno.peak <- annotatePeak(peak.gr, tssRegion = c(-2000, 2000), TxDb = txdb, annoDb = "org.Hs.eg.db")
+	me.peak.ann[[peak.i]] <- as.data.frame(anno.peak)
+}
+names(me.peak.ann) <- c("K562_H3K27me3", "K562_H3K4me3")
+# get unique genes for each mark within gene body (exon/intron) or promoter
+k27.genes <- unique(me.peak.ann$K562_H3K27me3$SYMBOL[-which(substr(me.peak.ann$K562_H3K27me3$annotation, 1, 1) %in% c("D", "3", "5"))])
+k4.genes <- unique(me.peak.ann$K562_H3K4me3$SYMBOL[-which(substr(me.peak.ann$K562_H3K4me3$annotation, 1, 1) %in% c("D", "3", "5"))])
+
+# make dataframe with Me annotations
+# first add genes into counts dataframe
+counts.data$gene <- c(eed.up.gene.counts$V14, ezh2.up.gene.counts$V14)
+# set Neither as default that don't end up with any Me marks
+counts.data$Me <- "Neither"
+# now add for K4 or K27 mark
+counts.data$Me[which(counts.data$gene %in% k4.genes)] <- "K4me3"
+counts.data$Me[which(counts.data$gene %in% k27.genes)] <- "K27me3"
+# finally apply bivalent to override all previous for genes with both
+counts.data$Me[which(counts.data$gene %in% bivalent.bed$V5)] <- "Bivalent"
+
+# collate number of occurances by mark & me status
+me.data <- counts.data %>%
+  count(mark, Me)
+
+# now make stacked bar to show number of each
+pdf(file.path(plots.dir, "barplot_Me_genes_promoter_EED19.pdf"))
+ggplot(me.data, aes(fill = Me, y = n, x = mark)) + 
+  geom_bar(position = "dodge", stat = "identity") + 
+  scale_fill_manual(values = c("#0CC0A4", "#F1CC01", "#61A9FB", "#CC0000")) +
+  scale_color_manual(values = c("#0CC0A4", "#F1CC01", "#61A9FB", "#CC0000")) +
+  theme_bw()  +
+  xlab("chip") +
+  ggtitle("number of genes with an increase of mark(s) at promoter")
+dev.off()
+```
+
+# plot common peaks on heatmaps
+```{bash}
+# added common peaks, now re-run
+sbatch ../../scripts/MF07_ChIP/DTMatrix_EED_EED19vK562diffpeaks_RP_merged.sbatch
+sbatch ../../scripts/MF07_ChIP/DTMatrix_EZH2_EED19vK562diffpeaks_RP_merged.sbatch
+```
+
+# same analysis for SUZ110 comparisons
+```{bash}
+# only doing for EZH2, EZHIP & SUZ12 as Me3 had <10 diffpeaks
+sbatch ../../scripts/MF07_ChIP/DTMatrix_SUZ12_SUZ110-EZHIPKOvSUZ110diffpeaks_RP_merged.sbatch
+sbatch ../../scripts/MF07_ChIP/DTMatrix_EZH2_SUZ110-EZHIPKOvSUZ110diffpeaks_RP_merged.sbatch
+sbatch ../../scripts/MF07_ChIP/DTMatrix_EZHIP_SUZ110-EZHIPKOvSUZ110diffpeaks_RP_merged.sbatch
+```
+
+
+# make euler plots of diff peaks intersection
+```{r}
+# set groups for EED diff groups
+suz12.suz110.fit <- euler(c("A" = 849, "B" = 117, "A&B" = 753))
+
+# plot and write out
+pdf(file.path(plots.dir, "euler_SUZ12_SUZ110-EZHIPKOvSUZ110diffpeaks.pdf"))
+plot(
+  suz12.suz110.fit, 
+  fills = list(fill = c("red", "steelblue4"), alpha = 0.5),
+  quantities = TRUE, 
+  legend = list(labels = c("up", "down")),
+  main = "SUZ110-EZHIPKOvSUZ110 differential SUZ12 peaks"
+  )
+dev.off()
+
+# same for ezh2
+ezh2.suz110.fit <- euler(c("A" = 580, "B" = 198, "A&B" = 476))
+
+pdf(file.path(plots.dir, "euler_EZH2_SUZ110-EZHIPKOvSUZ110diffpeaks.pdf"))
+plot(
+  ezh2.suz110.fit, 
+  fills = list(fill = c("red", "steelblue4"), alpha = 0.5),
+  quantities = TRUE, 
+  legend = list(labels = c("up", "down")),
+  main = "SUZ110-EZHIPKOvSUZ110 differential EZH2 peaks"
+  )
+dev.off()
+
+# same for ezhip
+ezhip.suz110.fit <- euler(c("A" = 10, "B" = 509, "A&B" = 23))
+
+pdf(file.path(plots.dir, "euler_EZHIP_SUZ110-EZHIPKOvSUZ110diffpeaks.pdf"))
+plot(
+  ezhip.suz110.fit, 
+  fills = list(fill = c("red", "steelblue4"), alpha = 0.5),
+  quantities = TRUE, 
+  legend = list(labels = c("up", "down")),
+  main = "SUZ110-EZHIPKOvSUZ110 differential EZHIP peaks"
+  )
+dev.off()
+```
+
+# make annobar for peaks where EZHIP is lost with knockout
+```{r}
+file.name <- "EZHIP-SUZ110-EZHIPKOvsSUZ110_c3.0_cond2.bed"
+peak.file <- fread(file.path(diff.peaks.dir, file.name), skip = 1)
+peak.gr <- with(peak.file, GRanges(V1, IRanges(start = V2, end = V3)))
+seqlevelsStyle(peak.gr) <- "UCSC"
+anno.peak <- annotatePeak(peak.gr, tssRegion = c(-1000, 1000), TxDb = txdb, annoDb = "org.Hs.eg.db")
+peak.ann <- as.data.frame(anno.peak)
+
+# write out the annotation table
+write.table(
+  peak.ann,
+  file.path(res.dir, paste0(gsub("_c3.0_cond2.bed", "", basename(file.name)), "_DOWNpeaks_ann.txt")),
+  sep = "\t",
+  col.names = TRUE,
+  row.names = FALSE,
+  quote = FALSE
+)
+
+# make an annotation bar plot for each
+pdf(
+  file.path(plots.dir, paste0("annoBar_", gsub("_c3.0_cond2.bed", "", basename(file.name)), "_DOWNpeaks.pdf")), 
+  height = 4, 
+  width = 8
+  )
+plotAnnoBar(anno.peak, title = gsub("_c3.0_cond2.bed", "_DOWNpeaks", basename(file.name)))+
+  scale_fill_manual(values = c("#6A3D93", "#FF7F00", "#FDBF6F", "#E31A1C", "#FB9A98", "#33A02C", "#B2DF8A", "#A6CEE8"))
+dev.off()
+
+# write out promoter peaks as bed file to overlap w/CGIs 
+prom.peaks <- peak.ann[which(peak.ann$annotation == "Promoter"), ]
+write.table(
+  prom.peaks,
+  file.path(project.dir, "bed_files/EZHIP_downPeaks_promoters1k.bed"),
+  sep = "\t",
+  col.names = FALSE,
+  row.names = FALSE,
+  quote = FALSE
+)
+```
+
+# make heatmaps for all marks over ezhip loss peaks
+```{bash}
+sbatch ../../scripts/MF07_ChIP/DTMatrix_SUZ12_EZHIPdownpeaks_RP_merged.sbatch
+sbatch ../../scripts/MF07_ChIP/DTMatrix_EZH2_EZHIPdownpeak_RP_merged.sbatch
+sbatch ../../scripts/MF07_ChIP/DTMatrix_me3_EZHIPdownpeaks_RP_merged.sbatch
+sbatch ../../scripts/MF07_ChIP/DTMatrix_me3_DMnorm_EZHIPdownpeaks_RP_merged.sbatch
+```
+
+# call peaks on combined reps for EED19 experiment reps for further analysis
+```{bash}
+sbatch ../../scripts/MF07_ChIP/macs2.sbatch \
+  alignment/eed19-2x-eed-r1_S15.sort.rmdup.bam \
+  alignment/eed19-2x-eed-r2_S16.sort.rmdup.bam \
+  alignment/eed19-2x-input_S21.sort.rmdup.bam \
+  eed19-2x-eed
+  
+sbatch ../../scripts/MF07_ChIP/macs2.sbatch \
+  alignment/eed19-ezh2-r1_S10.sort.rmdup.bam \
+  alignment/eed19-ezh2-r2_S12.sort.rmdup.bam \
+  alignment/eed19-2x-input_S21.sort.rmdup.bam \
+  eed19-ezh2
+  
+sbatch ../../scripts/MF07_ChIP/macs2.sbatch \
+  alignment/k562-2x-eed-r1_S13.sort.rmdup.bam \
+  alignment/k562-2x-eed-r2_S14.sort.rmdup.bam \
+  alignment/eed19-2x-input_S21.sort.rmdup.bam \
+  k562-2x-eed
+  
+sbatch ../../scripts/MF07_ChIP/macs2.sbatch \
+  alignment/k562-2x-ezh2-r1_S8.sort.rmdup.bam \
+  alignment/k562-2x-ezh2-r2_S9.sort.rmdup.bam \
+  alignment/eed19-2x-input_S21.sort.rmdup.bam \
+  k562-2x-ezh2
+```
+
+# characterise WT & EED19 peaks genes' methylation status separately and plot
+```{r}
+# first annotate merged peaks files for EED19 exp
+peak.files <- list.files(
+  peaks.dir, 
+  pattern = "*[eh][2d]_peaks.broadPeak", 
+  full.names = TRUE
+  )
+
+# annotate genes to peaksets
+eed19.peak.ann <- list()
+file.names <- gsub("_peaks.broadPeak", "", basename(peak.files))
+for(peak.i in 1:length(peak.files)){
+  peak.file <- fread(peak.files[peak.i], skip = 1)
+  peak.gr <- with(peak.file, GRanges(V1, IRanges(start = V2, end = V3)))
+	seqlevelsStyle(peak.gr) <- "UCSC"
+	anno.peak <- annotatePeak(peak.gr, tssRegion = c(-2000, 2000), TxDb = txdb, annoDb = "org.Hs.eg.db")
+	eed19.peak.ann[[peak.i]] <- as.data.frame(anno.peak)
+	
+	# write out each annotation table
+	write.table(
+	  eed19.peak.ann[[peak.i]],
+	  file.path(res.dir, paste0(file.names[peak.i], "_peaks_ann.txt")),
+	  sep = "\t",
+	  col.names = TRUE,
+	  row.names = FALSE,
+	  quote = FALSE
+	)
+	
+	# make an annotation bar plot for each
+	pdf(
+	  file.path(plots.dir, paste0("annoBar_", file.names[peak.i], ".pdf")), 
+	  height = 4, 
+	  width = 8
+	  )
+	plotAnnoBar(anno.peak, title = file.names[peak.i])
+	dev.off()
+}
+names(eed19.peak.ann) <- file.names
+
+# get unique genes for each peakset within gene body (exon/intron) or promoter
+eed19.eed.genes <- unique(eed19.peak.ann$`eed19-2x-eed`$SYMBOL[-which(substr(eed19.peak.ann$`eed19-2x-eed`$annotation, 1, 1) %in% c("D", "3", "5"))])
+eed19.ezh2.genes <- unique(eed19.peak.ann$`eed19-ezh2`$SYMBOL[-which(substr(eed19.peak.ann$`eed19-ezh2`$annotation, 1, 1) %in% c("D", "3", "5"))])
+k562.eed.genes <- unique(eed19.peak.ann$`k562-2x-eed`$SYMBOL[-which(substr(eed19.peak.ann$`k562-2x-eed`$annotation, 1, 1) %in% c("D", "3", "5"))])
+k562.ezh2.genes <- unique(eed19.peak.ann$`k562-2x-ezh2`$SYMBOL[-which(substr(eed19.peak.ann$`k562-2x-ezh2`$annotation, 1, 1) %in% c("D", "3", "5"))])
+
+# init dataframe with genes for each peakset
+peak.me.data <- data.frame(
+  "gene" = c(eed19.eed.genes, eed19.ezh2.genes, k562.eed.genes, k562.ezh2.genes),
+  "mark" = c(
+    rep("EED19_EED", length(eed19.eed.genes)), 
+    rep("EED19_EZH2", length(eed19.ezh2.genes)),
+    rep("K562_EED", length(k562.eed.genes)), 
+    rep("K562_EZH2", length(k562.ezh2.genes))
+    )
+)
+
+# set Neither as default that don't end up with any Me marks
+peak.me.data$Me <- "Neither"
+# now add for K4 or K27 mark
+peak.me.data$Me[which(peak.me.data$gene %in% k4.genes)] <- "K4me3"
+peak.me.data$Me[which(peak.me.data$gene %in% k27.genes)] <- "K27me3"
+# finally apply bivalent to override all previous for genes with both
+peak.me.data$Me[which(peak.me.data$gene %in% bivalent.bed$V5)] <- "Bivalent"
+
+# collate number of occurances by mark & me status
+me.bar.data <- peak.me.data %>%
+  count(mark, Me)
+
+# now make stacked bar to show number of each
+pdf(file.path(plots.dir, "barplot_Me_genes_promoter_EED19_perSample.pdf"))
+ggplot(me.bar.data, aes(fill = Me, y = n, x = mark)) + 
+  geom_bar(position = "dodge", stat = "identity") + 
+  scale_fill_manual(values = c("#0CC0A4", "#F1CC01", "#61A9FB", "#CC0000")) +
+  scale_color_manual(values = c("#0CC0A4", "#F1CC01", "#61A9FB", "#CC0000")) +
+  theme_bw()  +
+  xlab("sample") +
+  ggtitle("methylation of genes with peaks for mark")
+dev.off()
+
+pdf(file.path(plots.dir, "propbarplot_Me_genes_promoter_EED19_perSample.pdf"))
+ggplot(me.bar.data, aes(fill = Me, y = n, x = mark)) + 
+  geom_bar(position = "fill", stat = "identity") + 
+  scale_fill_manual(values = c("#0CC0A4", "#F1CC01", "#61A9FB", "#CC0000")) +
+  scale_color_manual(values = c("#0CC0A4", "#F1CC01", "#61A9FB", "#CC0000")) +
+  theme_bw()  +
+  xlab("sample") +
+  ggtitle("methylation of genes with peaks for mark")
+dev.off()
+
+# write out table for methylation status
+write.table(
+  peak.me.data,
+  file.path(res.dir, "gene_Me_status_EED19_peaks.txt"),
+  sep = "\t",
+  col.names = TRUE,
+  row.names = FALSE,
+  quote = FALSE
+)
+```
+
+# re-make heatmaps over k562 EZH2 peaks (EZH2 had more (596) than EED(315)) and
+# mut EED peaks
+```{bash}
+# mkdir for beds so bed of sorted regions can be used in both heatmaps sets
+mkdir bed_files
+
+sbatch ../../scripts/MF07_ChIP/DTMatrix_EZH2_K562EZH2peaks_RP_merged.sbatch
+sbatch ../../scripts/MF07_ChIP/DTMatrix_EED_EED19EEDpeaks_RP_merged.sbatch
+
+# make heatmaps for other marks based on these regions' sorting
+sbatch ../../scripts/MF07_ChIP/DTMatrix_EED_K562EZH2peaks_ordered_RP_merged.sbatch
+sbatch ../../scripts/MF07_ChIP/DTMatrix_EZH2_EED19EEDpeaks_ordered_RP_merged.sbatch
+```
+
+# also redo biv/K4/K27 barplots on these peaks
+```{r}
+# get unique genes for each peakset within gene body (exon/intron) or promoter
+eed19.eed.genes <- unique(eed19.peak.ann$SYMBOL[-which(substr(eed19.peak.ann$`k562-2x-ezh2`$annotation, 1, 1) %in% c("D", "3", "5"))])
+
+# init dataframe with genes for each peakset
+peak.me.data <- data.frame(
+  "gene" = c(eed19.eed.genes, eed19.ezh2.genes, k562.eed.genes, k562.ezh2.genes),
+  "mark" = c(
+    rep("EED19_EED", length(eed19.eed.genes)), 
+    rep("EED19_EZH2", length(eed19.ezh2.genes)),
+    rep("K562_EED", length(k562.eed.genes)), 
+    rep("K562_EZH2", length(k562.ezh2.genes))
+    )
+)
+
+# set Neither as default that don't end up with any Me marks
+peak.me.data$Me <- "Neither"
+# now add for K4 or K27 mark
+peak.me.data$Me[which(peak.me.data$gene %in% k4.genes)] <- "K4me3"
+peak.me.data$Me[which(peak.me.data$gene %in% k27.genes)] <- "K27me3"
+# finally apply bivalent to override all previous for genes with both
+peak.me.data$Me[which(peak.me.data$gene %in% bivalent.bed$V5)] <- "Bivalent"
+
+# collate number of occurances by mark & me status
+me.bar.data <- peak.me.data %>%
+  count(mark, Me)
+
+# now make stacked bar to show number of each
+pdf(file.path(plots.dir, "barplot_Me_genes_promoter_EED19_perSample.pdf"))
+ggplot(me.bar.data, aes(fill = Me, y = n, x = mark)) + 
+  geom_bar(position = "dodge", stat = "identity") + 
+  scale_fill_manual(values = c("#0CC0A4", "#F1CC01", "#61A9FB", "#CC0000")) +
+  scale_color_manual(values = c("#0CC0A4", "#F1CC01", "#61A9FB", "#CC0000")) +
+  theme_bw()  +
+  xlab("sample") +
+  ggtitle("methylation of genes with peaks for mark")
+dev.off()
+
+pdf(file.path(plots.dir, "propbarplot_Me_genes_promoter_EED19_perSample.pdf"))
+ggplot(me.bar.data, aes(fill = Me, y = n, x = mark)) + 
+  geom_bar(position = "fill", stat = "identity") + 
+  scale_fill_manual(values = c("#0CC0A4", "#F1CC01", "#61A9FB", "#CC0000")) +
+  scale_color_manual(values = c("#0CC0A4", "#F1CC01", "#61A9FB", "#CC0000")) +
+  theme_bw()  +
+  xlab("sample") +
+  ggtitle("methylation of genes with peaks for mark")
+dev.off()
+
+# write out table for methylation status
+write.table(
+  peak.me.data,
+  file.path(res.dir, "gene_Me_status_EED19_peaks.txt"),
+  sep = "\t",
+  col.names = TRUE,
+  row.names = FALSE,
+  quote = FALSE
+)
+```
+
+# overlap EZHIP down peaks w/CGIs
+```{bash}
+module load bedtools2/2.31.1-gcc-13.2.0
+
+# just get unique overlaps in EZHIP file found in CGI file
+bedtools intersect -u \
+  -a bed_files/EZHIP_downPeaks_promoters1k.bed \
+  -b /data/reference/dawson_labs/bed_files/Hg38/CGI_sorted.bed > \
+  bed_files/EZHIP_downPeaks_promoters_CGIs.bed
+```
+
+# make prop bar for EZHIP CGIs
+```{r}
+ezhip.bar.data <- data.frame(
+  "percent" = c(84.21, 15.79),
+  "status" = factor(c("CGI", "non-CGI"), levels = c("non-CGI", "CGI")),
+  "peaks" = "EZHIPdownPeaks"
+)
+
+pdf(file.path(plots.dir, "propbarplot_EZHIPdownPeaks_CGIoverlap.pdf"))
+ggplot(ezhip.bar.data, aes(fill = status, y = percent, x = peaks)) + 
+  geom_bar(position = "stack", stat = "identity") + 
+  scale_fill_manual(values = c("gray80", "black")) +
+  scale_color_manual(values = c("gray80", "black"))  +
+  theme_bw()  +
+  ylab("proportion") +
+  ggtitle("EZHIP peaks down in EZHIP-KOvMUT CpG Island overlap")
+dev.off()
+```
+
+# for EZH2 WT peaks overlap w/ CGI to get peaksets for +/- to the plot heatmap
+```{bash}
+module load bedtools2/2.31.1-gcc-13.2.0
+
+# just get unique overlaps in EZHIP file found in CGI file
+bedtools intersect -u -wa \
+  -a macs/broadpeaks/k562-2x-ezh2_peaks.broadPeak \
+  -b /data/reference/dawson_labs/bed_files/Hg38/CGI_sorted_nochr.bed > \
+  bed_files/K562_EZH2_peaks_CGIs.bed
+  
+# get no overlaps
+bedtools intersect -wa -v \
+  -a macs/broadpeaks/k562-2x-ezh2_peaks.broadPeak \
+  -b /data/reference/dawson_labs/bed_files/Hg38/CGI_sorted_nochr.bed > \
+  bed_files/K562_EZH2_peaks_nonCGIs.bed
+  
+# now use for heatmap
+sbatch ../../scripts/MF07_ChIP/DTMatrix_EZH2_EZH2peaksCGI_RP_merged.sbatch
+```
+
+# make annobar plots for EZH2 EZHIPKO-SUZ110 diff peaks
+```{r}
+ezh2.ezhipko.diffpeaks <- list.files(
+  diff.peaks.dir, 
+  pattern = "EZH2-SUZ110-EZHIPKOvsSUZ110", 
+  full.names = TRUE
+  )
+
+# annotate genes to peaksets
+ezh2.ezhipko.ann <- list()
+file.names <- paste0("EZH2-SUZ110-EZHIPKOvsSUZ110", c("_common", "_up", "_down"))
+for(peak.i in 1:length(ezh2.ezhipko.diffpeaks)){
+  peak.file <- fread(ezh2.ezhipko.diffpeaks[peak.i], skip = 1)
+  peak.gr <- with(peak.file, GRanges(V1, IRanges(start = V2, end = V3)))
+	seqlevelsStyle(peak.gr) <- "UCSC"
+	anno.peak <- annotatePeak(peak.gr, tssRegion = c(-2000, 2000), TxDb = txdb, annoDb = "org.Hs.eg.db")
+	ezh2.ezhipko.ann[[peak.i]] <- as.data.frame(anno.peak)
+	
+	# write out each annotation table
+	write.table(
+	  ezh2.ezhipko.ann[[peak.i]],
+	  file.path(res.dir, paste0(file.names[peak.i], "_peaks_ann.txt")),
+	  sep = "\t",
+	  col.names = TRUE,
+	  row.names = FALSE,
+	  quote = FALSE
+	)
+	
+	# make an annotation bar plot for each
+	pdf(
+	  file.path(plots.dir, paste0("annoBar_", file.names[peak.i], ".pdf")), 
+	  height = 4, 
+	  width = 8
+	  )
+	plotAnnoBar(anno.peak, title = file.names[peak.i])
+	dev.off()
+}
+names(ezh2.ezhipko.ann) <- file.names
+```
+
+# also make annobar plot for non-CGI EZH2 peaks
+```{r}
+file.name <- "bed_files/K562_EZH2_peaks_nonCGIs.bed"
+peak.file <- fread(file.path(project.dir, file.name), skip = 1)
+peak.gr <- with(peak.file, GRanges(V1, IRanges(start = V2, end = V3)))
+seqlevelsStyle(peak.gr) <- "UCSC"
+anno.peak <- annotatePeak(peak.gr, tssRegion = c(-2000, 2000), TxDb = txdb, annoDb = "org.Hs.eg.db")
+peak.ann <- as.data.frame(anno.peak)
+
+# write out the annotation table
+write.table(
+  peak.ann,
+  file.path(res.dir, paste0(gsub(".bed", "", basename(file.name)), "_ann.txt")),
+  sep = "\t",
+  col.names = TRUE,
+  row.names = FALSE,
+  quote = FALSE
+)
+
+# make an annotation bar plot for each
+pdf(
+  file.path(plots.dir, paste0("annoBar_", gsub(".bed", "", basename(file.name)), ".pdf")), 
+  height = 4, 
+  width = 8
+  )
+plotAnnoBar(anno.peak, title = gsub(".bed", "", basename(file.name))) #+
+#  scale_fill_manual(values = c("#6A3D93", "#FF7F00", "#FDBF6F", "#E31A1C", "#FB9A98", "#33A02C", "#B2DF8A", "#A6CEE8"))
+dev.off()
+```
+
+# maria also wanted to see suz12 samples over EZH2 peaks
+```{bash}
+sbatch ../../scripts/MF07_ChIP/DTMatrix_SUZ12_EZH2peaksCGI_RP_merged.sbatch
+```
+
+# also make annobar of EED19 EED up peaks
+```{r}
+file.name <- "EED-EED19vsK562_c3.0_cond1.bed"
+peak.file <- fread(file.path(diff.peaks.dir, file.name), skip = 1)
+peak.gr <- with(peak.file, GRanges(V1, IRanges(start = V2, end = V3)))
+seqlevelsStyle(peak.gr) <- "UCSC"
+anno.peak <- annotatePeak(peak.gr, tssRegion = c(-2000, 2000), TxDb = txdb, annoDb = "org.Hs.eg.db")
+peak.ann <- as.data.frame(anno.peak)
+
+# write out the annotation table
+write.table(
+  peak.ann,
+  file.path(res.dir, paste0(gsub("_c3.0_cond1.bed", "", basename(file.name)), "_UPpeaks_ann.txt")),
+  sep = "\t",
+  col.names = TRUE,
+  row.names = FALSE,
+  quote = FALSE
+)
+
+# make an annotation bar plot for each
+pdf(
+  file.path(plots.dir, paste0("annoBar_", gsub("_c3.0_cond1.bed", "", basename(file.name)), ".pdf")), 
+  height = 4, 
+  width = 8
+  )
+plotAnnoBar(anno.peak, title = gsub("_c3.0_cond1.bed", "", basename(file.name))) #+
+#  scale_fill_manual(values = c("#6A3D93", "#FF7F00", "#FDBF6F", "#E31A1C", "#FB9A98", "#33A02C", "#B2DF8A", "#A6CEE8"))
+dev.off()
+```
+
+# do CGI analysis for EZH2 SUZ110-EZHIP KO diff peaks groups
+```{bash}
+module load bedtools2/2.31.1-gcc-13.2.0
+
+# just get unique overlaps in diff peaks files found in CGI file
+bedtools intersect -u -wa \
+  -a bdgdiff/EZH2-SUZ110-EZHIPKOvsSUZ110_c3.0_common.bed \
+  -b /data/reference/dawson_labs/bed_files/Hg38/CGI_sorted_nochr.bed > \
+  bed_files/EZH2-SUZ110-EZHIPKOvsSUZ110_common_CGI.bed
+  
+bedtools intersect -u -wa \
+  -a bdgdiff/EZH2-SUZ110-EZHIPKOvsSUZ110_c3.0_cond1.bed \
+  -b /data/reference/dawson_labs/bed_files/Hg38/CGI_sorted_nochr.bed > \
+  bed_files/EZH2-SUZ110-EZHIPKOvsSUZ110_UPpeaks_CGI.bed
+  
+bedtools intersect -u -wa \
+  -a bdgdiff/EZH2-SUZ110-EZHIPKOvsSUZ110_c3.0_cond2.bed \
+  -b /data/reference/dawson_labs/bed_files/Hg38/CGI_sorted_nochr.bed > \
+  bed_files/EZH2-SUZ110-EZHIPKOvsSUZ110_DOWNpeaks_CGI.bed
+  
+# get no overlaps
+bedtools intersect -wa -v \
+  -a bdgdiff/EZH2-SUZ110-EZHIPKOvsSUZ110_c3.0_common.bed \
+  -b /data/reference/dawson_labs/bed_files/Hg38/CGI_sorted_nochr.bed > \
+  bed_files/EZH2-SUZ110-EZHIPKOvsSUZ110_common_nonCGI.bed
+  
+bedtools intersect -wa -v \
+  -a bdgdiff/EZH2-SUZ110-EZHIPKOvsSUZ110_c3.0_cond1.bed \
+  -b /data/reference/dawson_labs/bed_files/Hg38/CGI_sorted_nochr.bed > \
+  bed_files/EZH2-SUZ110-EZHIPKOvsSUZ110_UPpeaks_nonCGI.bed
+  
+bedtools intersect -wa -v \
+  -a bdgdiff/EZH2-SUZ110-EZHIPKOvsSUZ110_c3.0_cond2.bed \
+  -b /data/reference/dawson_labs/bed_files/Hg38/CGI_sorted_nochr.bed > \
+  bed_files/EZH2-SUZ110-EZHIPKOvsSUZ110_DOWNpeaks_nonCGI.bed
+```
+
+# make prop bar for above data
+```{r}
+ezh2.ezhip.bar.data <- data.frame(
+  "percent" = c(86.32, 13.68, 95.34, 4.66, 13.20, 86.80),
+  "status" = factor(rep(c("CGI", "non-CGI"), 3), levels = c("non-CGI", "CGI")),
+  "peaks" = factor(
+    c(rep("common", 2), rep("up", 2), rep("down", 2)),
+    levels = c("common", "up", "down")
+    )
+)
+
+pdf(file.path(plots.dir, "propbarplot_EZH2_EZHIPdiffPeaks_CGIoverlap.pdf"))
+ggplot(ezh2.ezhip.bar.data, aes(fill = status, y = percent, x = peaks)) + 
+  geom_bar(position = "stack", stat = "identity") + 
+  scale_fill_manual(values = c("gray80", "black")) +
+  scale_color_manual(values = c("gray80", "black"))  +
+  theme_bw()  +
+  ylab("proportion") +
+  ggtitle("EZH2 EZHIP-KOvMUT differential peaks CpG Island overlap")
+dev.off()
+```
+
+# make EZHIP heatmap over the EZH2 peaks down w/EZHIP KO
+```{bash}
+sbatch ../../scripts/MF07_ChIP/DTMatrix_EZHIP_EZH2downpeaks_RP_merged.sbatch
+```
+
+# look at EZH2 diff binding in SUZ110vsWT and make heatmap over diff peaks
+```{bash}
+dname=macs/broadpeaks
+
+sbatch ../../scripts/MF07_ChIP/bdgdiff.sbatch \
+  ${dname}/suz110-ezh2_merged_treat_pileup.bdg \
+  ${dname}/suz110-ezh2_merged_control_lambda.bdg \
+  ${dname}/k562-2x-ezh2_merged_treat_pileup.bdg \
+  ${dname}/k562-2x-ezh2_merged_control_lambda.bdg \
+  EZH2-SUZ110vsK562
+  
+sbatch ../../scripts/MF07_ChIP/DTMatrix_EZH2_SUZ110vK562diffpeaks_RP_merged.sbatch
+sbatch ../../scripts/MF07_ChIP/DTMatrix_SUZ12_EZH2-SUZ110vK562diffpeaks_RP_merged.sbatch
+```
+
+# now intersect these w/CGIs
+```{bash}
+module load bedtools2/2.31.1-gcc-13.2.0
+
+# just get unique overlaps in diff peaks files found in CGI file
+bedtools intersect -u -wa \
+  -a bdgdiff/EZH2-SUZ110vsK562_c3.0_common.bed \
+  -b /data/reference/dawson_labs/bed_files/Hg38/CGI_sorted_nochr.bed > \
+  bed_files/EZH2-SUZ110vsK562_common_CGI.bed
+  
+bedtools intersect -u -wa \
+  -a bdgdiff/EZH2-SUZ110vsK562_c3.0_cond1.bed \
+  -b /data/reference/dawson_labs/bed_files/Hg38/CGI_sorted_nochr.bed > \
+  bed_files/EZH2-SUZ110vsK562_UPpeaks_CGI.bed
+  
+bedtools intersect -u -wa \
+  -a bdgdiff/EZH2-SUZ110vsK562_c3.0_cond2.bed \
+  -b /data/reference/dawson_labs/bed_files/Hg38/CGI_sorted_nochr.bed > \
+  bed_files/EZH2-SUZ110vsK562_DOWNpeaks_CGI.bed
+  
+wc -l bdgdiff/EZH2-SUZ110vsK562_c3.0_common.bed
+341 bdgdiff/EZH2-SUZ110vsK562_c3.0_common.bed
+wc -l bed_files/EZH2-SUZ110vsK562_common_CGI.bed
+293 bed_files/EZH2-SUZ110vsK562_common_CGI.bed
+
+wc -l bdgdiff/EZH2-SUZ110vsK562_c3.0_cond1.bed
+379 bdgdiff/EZH2-SUZ110vsK562_c3.0_cond1.bed
+wc -l bed_files/EZH2-SUZ110vsK562_UPpeaks_CGI.bed
+97 bed_files/EZH2-SUZ110vsK562_UPpeaks_CGI.bed
+
+wc -l bdgdiff/EZH2-SUZ110vsK562_c3.0_cond2.bed
+144 bdgdiff/EZH2-SUZ110vsK562_c3.0_cond2.bed
+wc -l bed_files/EZH2-SUZ110vsK562_DOWNpeaks_CGI.bed
+108 bed_files/EZH2-SUZ110vsK562_DOWNpeaks_CGI.bed
+```
+
+# check intersect of EZHIP peaks w/ MUTvWT diff peaks
+```{bash}
+bedtools intersect -u -wa \
+  -a bdgdiff/EZH2-SUZ110vsK562_c3.0_common.bed \
+  -b bdgdiff/EZHIP-SUZ110-EZHIPKOvsSUZ110_c3.0_cond2.bed > \
+  bed_files/EZH2-SUZ110vsK562_common_EZHIPdown.bed
+  
+bedtools intersect -u -wa \
+  -a bdgdiff/EZH2-SUZ110vsK562_c3.0_cond1.bed \
+  -b bdgdiff/EZHIP-SUZ110-EZHIPKOvsSUZ110_c3.0_cond2.bed > \
+  bed_files/EZH2-SUZ110vsK562_UPpeaks_EZHIPdown.bed
+  
+bedtools intersect -u -wa \
+  -a bdgdiff/EZH2-SUZ110vsK562_c3.0_cond2.bed \
+  -b bdgdiff/EZHIP-SUZ110-EZHIPKOvsSUZ110_c3.0_cond2.bed > \
+  bed_files/EZH2-SUZ110vsK562_DOWNpeaks_EZHIPdown.bed
+  
+wc -l bed_files/EZH2-SUZ110vsK562_common_EZHIPdown.bed
+0 bed_files/EZH2-SUZ110vsK562_common_EZHIPdown.bed
+
+wc -l bed_files/EZH2-SUZ110vsK562_UPpeaks_EZHIPdown.bed
+5 bed_files/EZH2-SUZ110vsK562_UPpeaks_EZHIPdown.bed
+
+wc -l bed_files/EZH2-SUZ110vsK562_DOWNpeaks_EZHIPdown.bed
+0 bed_files/EZH2-SUZ110vsK562_DOWNpeaks_EZHIPdown.bed
+
+# also for SUZ110-EZHIPKOvsSUZ110
+bedtools intersect -u -wa \
+  -a bdgdiff/EZH2-SUZ110-EZHIPKOvsSUZ110_c3.0_common.bed \
+  -b bdgdiff/EZHIP-SUZ110-EZHIPKOvsSUZ110_c3.0_cond2.bed > \
+  bed_files/EZH2-SUZ110-EZHIPKOvsSUZ110_common_EZHIPdown.bed
+  
+bedtools intersect -u -wa \
+  -a bdgdiff/EZH2-SUZ110-EZHIPKOvsSUZ110_c3.0_cond1.bed \
+  -b bdgdiff/EZHIP-SUZ110-EZHIPKOvsSUZ110_c3.0_cond2.bed > \
+  bed_files/EZH2-SUZ110-EZHIPKOvsSUZ110_UPpeaks_EZHIPdown.bed
+  
+bedtools intersect -u -wa \
+  -a bdgdiff/EZH2-SUZ110-EZHIPKOvsSUZ110_c3.0_cond2.bed \
+  -b bdgdiff/EZHIP-SUZ110-EZHIPKOvsSUZ110_c3.0_cond2.bed > \
+  bed_files/EZH2-SUZ110-EZHIPKOvsSUZ110_DOWNpeaks_EZHIPdown.bed
+  
+wc -l bed_files/EZH2-SUZ110-EZHIPKOvsSUZ110_common_EZHIPdown.bed
+4 bed_files/EZH2-SUZ110-EZHIPKOvsSUZ110_common_EZHIPdown.bed
+
+wc -l bed_files/EZH2-SUZ110-EZHIPKOvsSUZ110_UPpeaks_EZHIPdown.bed
+0 bed_files/EZH2-SUZ110-EZHIPKOvsSUZ110_UPpeaks_EZHIPdown.bed
+
+wc -l bed_files/EZH2-SUZ110-EZHIPKOvsSUZ110_DOWNpeaks_EZHIPdown.bed
+3 bed_files/EZH2-SUZ110-EZHIPKOvsSUZ110_DOWNpeaks_EZHIPdown.bed
+
+bedtools intersect -u -wa \
+  -a bdgdiff/SUZ12-SUZ110-EZHIPKOvsSUZ110_c3.0_common.bed \
+  -b bdgdiff/EZHIP-SUZ110-EZHIPKOvsSUZ110_c3.0_cond2.bed > \
+  bed_files/SUZ12-SUZ110-EZHIPKOvsSUZ110_common_EZHIPdown.bed
+  
+bedtools intersect -u -wa \
+  -a bdgdiff/SUZ12-SUZ110-EZHIPKOvsSUZ110_c3.0_cond1.bed \
+  -b bdgdiff/EZHIP-SUZ110-EZHIPKOvsSUZ110_c3.0_cond2.bed > \
+  bed_files/SUZ12-SUZ110-EZHIPKOvsSUZ110_UPpeaks_EZHIPdown.bed
+  
+bedtools intersect -u -wa \
+  -a bdgdiff/SUZ12-SUZ110-EZHIPKOvsSUZ110_c3.0_cond2.bed \
+  -b bdgdiff/EZHIP-SUZ110-EZHIPKOvsSUZ110_c3.0_cond2.bed > \
+  bed_files/SUZ12-SUZ110-EZHIPKOvsSUZ110_DOWNpeaks_EZHIPdown.bed
+  
+wc -l bed_files/SUZ12-SUZ110-EZHIPKOvsSUZ110_common_EZHIPdown.bed
+6 bed_files/SUZ12-SUZ110-EZHIPKOvsSUZ110_common_EZHIPdown.bed
+
+wc -l bed_files/SUZ12-SUZ110-EZHIPKOvsSUZ110_UPpeaks_EZHIPdown.bed
+0 bed_files/SUZ12-SUZ110-EZHIPKOvsSUZ110_UPpeaks_EZHIPdown.bed
+
+wc -l bed_files/SUZ12-SUZ110-EZHIPKOvsSUZ110_DOWNpeaks_EZHIPdown.bed
+2 bed_files/SUZ12-SUZ110-EZHIPKOvsSUZ110_DOWNpeaks_EZHIPdown.bed
+```
+
+# nothing intersects
+# look at genes w/EZHIP down peaks and see if these intersect w/genes annotated
+# to MUTvWT EZH2 diff peaks
+```{r}
+ezhip.peak.ann <- fread(file.path(res.dir, "EZHIP-SUZ110-EZHIPKOvsSUZ110_DOWNpeaks_ann.txt"))
+
+ezhip.genes <- unique(ezhip.peak.ann$SYMBOL[which(ezhip.peak.ann$annotation == "Promoter")])
+
+# annotate MUTvWT diff peaks
+ezh2.mut.diffpeaks <- list.files(
+  diff.peaks.dir, 
+  pattern = "EZH2-SUZ110vsK562*", 
+  full.names = TRUE
+  )
+
+# annotate genes to peaksets
+ezh2.mut.ann <- list()
+file.names <- paste0("EZH2-SUZ110vsK562", c("_common", "_up", "_down"))
+for(peak.i in 1:length(ezh2.mut.diffpeaks)){
+  peak.file <- fread(ezh2.mut.diffpeaks[peak.i], skip = 1)
+  peak.gr <- with(peak.file, GRanges(V1, IRanges(start = V2, end = V3)))
+	seqlevelsStyle(peak.gr) <- "UCSC"
+	anno.peak <- annotatePeak(peak.gr, tssRegion = c(-1000, 1000), TxDb = txdb, annoDb = "org.Hs.eg.db")
+	ezh2.mut.ann[[peak.i]] <- as.data.frame(anno.peak)
+	
+	# write out each annotation table
+	write.table(
+	  ezh2.mut.ann[[peak.i]],
+	  file.path(res.dir, paste0(file.names[peak.i], "_peaks_ann.txt")),
+	  sep = "\t",
+	  col.names = TRUE,
+	  row.names = FALSE,
+	  quote = FALSE
+	)
+	
+	# make an annotation bar plot for each
+	pdf(
+	  file.path(plots.dir, paste0("annoBar_", file.names[peak.i], ".pdf")), 
+	  height = 4, 
+	  width = 8
+	  )
+	plotAnnoBar(anno.peak, title = file.names[peak.i])
+	dev.off()
+}
+names(ezh2.mut.ann) <- file.names
+
+# now look for ezhip genes in these diff peak ann files
+mut.com.ezhip.genes <- ezh2.mut.ann$`EZH2-SUZ110vsK562_common`[which(ezh2.mut.ann$`EZH2-SUZ110vsK562_common`$SYMBOL %in% ezhip.genes), ]
+mut.up.ezhip.genes <- ezh2.mut.ann$`EZH2-SUZ110vsK562_up`[which(ezh2.mut.ann$`EZH2-SUZ110vsK562_up`$SYMBOL %in% ezhip.genes), ]
+mut.down.ezhip.genes <- ezh2.mut.ann$`EZH2-SUZ110vsK562_down`[which(ezh2.mut.ann$`EZH2-SUZ110vsK562_down`$SYMBOL %in% ezhip.genes), ]
+```
+
+# not even close to the same genes
+# check for the opposite, see what happens to EZHIP over steady state EZH2 peaks
+# and MUTvWT peaks
+```{bash}
+sbatch ../../scripts/MF07_ChIP/DTMatrix_EZHIP_EZH2peaks_CGI_ordered_RP_merged.sbatch
+sbatch ../../scripts/MF07_ChIP/DTMatrix_EZHIP_EZH2diffpeaks_MTvWT_ordered_RP_merged.sbatch
+```
+
+# make CGI prop bar plots for EZH2 WT peaks and MUTvWT
+```{r}
+ezh2.mut.bar.data <- data.frame(
+  "percent" = c(85.92, 14.08, 25.59, 74.41, 75.00, 25.00),
+  "status" = factor(rep(c("CGI", "non-CGI"), 3), levels = c("non-CGI", "CGI")),
+  "peaks" = factor(
+    c(rep("common", 2), rep("up", 2), rep("down", 2)),
+    levels = c("common", "up", "down")
+    )
+)
+
+pdf(file.path(plots.dir, "propbarplot_EZH2_MUTvWTdiffPeaks_CGIoverlap.pdf"))
+ggplot(ezh2.mut.bar.data, aes(fill = status, y = percent, x = peaks)) + 
+  geom_bar(position = "stack", stat = "identity") + 
+  scale_fill_manual(values = c("gray80", "black")) +
+  scale_color_manual(values = c("gray80", "black"))  +
+  theme_bw()  +
+  ylab("proportion") +
+  ggtitle("EZH2 MUTvWT differential peaks CpG Island overlap")
+dev.off()
+
+ezh2.wt.bar.data <- data.frame(
+  "percent" = c(86.24, 13.76),
+  "status" = factor(c("CGI", "non-CGI"), levels = c("non-CGI", "CGI")),
+  "peaks" = "EZH2 WT Peaks"
+)
+
+pdf(file.path(plots.dir, "propbarplot_EZH2WTpeaks_CGIoverlap.pdf"))
+ggplot(ezh2.wt.bar.data, aes(fill = status, y = percent, x = peaks)) + 
+  geom_bar(position = "stack", stat = "identity") + 
+  scale_fill_manual(values = c("gray80", "black")) +
+  scale_color_manual(values = c("gray80", "black"))  +
+  theme_bw()  +
+  ylab("proportion") +
+  ggtitle("EZH2 WT peaks CpG Island overlap")
+dev.off()
+```
+
+# also lok at me3 over EZH2WT peaks
+```{bash}
+sbatch ../../scripts/MF07_ChIP/DTMatrix_me3_DMnorm_EZH2peaks_CGI_ordered_RP_merged.sbatch
+sbatch ../../scripts/MF07_ChIP/DTMatrix_me3_DMnorm_EZH2diffpeaks_MTvWT_ordered_RP_merged.sbatch
+```
+
+# classify EZHIP down peaks by metylation status
+```{r}
+# init dataframe with genes
+ezhip.me.data <- data.frame(
+  "gene" = ezhip.genes,
+  "mark" = c(rep("EZHIP_DOWN", length(ezhip.genes)))
+)
+
+# set Neither as default that don't end up with any Me marks
+ezhip.me.data$Me <- "Neither"
+# now add for K4 or K27 mark
+ezhip.me.data$Me[which(ezhip.me.data$gene %in% k4.genes)] <- "K4me3"
+ezhip.me.data$Me[which(ezhip.me.data$gene %in% k27.genes)] <- "K27me3"
+# finally apply bivalent to override all previous for genes with both
+ezhip.me.data$Me[which(ezhip.me.data$gene %in% bivalent.bed$V5)] <- "Bivalent"
+
+# collate number of occurances by mark & me status
+ezhip.me.bar.data <- ezhip.me.data %>%
+  count(mark, Me)
+
+# now make stacked bar to show number of each
+pdf(file.path(plots.dir, "propbarplot_Me_genes_promoter_EZHIP_DOWNpeaks.pdf"))
+ggplot(ezhip.me.bar.data, aes(fill = Me, y = n, x = mark)) + 
+  geom_bar(position = "fill", stat = "identity") + 
+  scale_fill_manual(values = c("#0CC0A4", "#F1CC01", "#61A9FB", "#CC0000")) +
+  scale_color_manual(values = c("#0CC0A4", "#F1CC01", "#61A9FB", "#CC0000")) +
+  theme_bw()  +
+  ylab("proportion") +
+  ggtitle("methylation of genes with peaks for mark")
+dev.off()
+
+# write out table for methylation status
+write.table(
+  ezhip.me.data,
+  file.path(res.dir, "gene_Me_status_EZHIP_DOWNpeaks.txt"),
+  sep = "\t",
+  col.names = TRUE,
+  row.names = FALSE,
+  quote = FALSE
+)
+```
+
+# check overlap of EZH2 both (EED19 & SUZ110) vs WT to see how much they overlap
+```{bash}
+module load bedtools2/2.31.1-gcc-13.2.0
+
+# just get unique overlaps in diff peaks files found in CGI file
+bedtools intersect -u -wa -wb \
+  -a bdgdiff/EZH2-SUZ110vsK562_c3.0_cond1.bed \
+  -b bdgdiff/EZH2-EED19vsK562_c3.0_cond1.bed > \
+  bed_files/EZH2-SUZ110_EED19_cond1_overlap.bed
+  
+wc -l bdgdiff/EZH2-SUZ110vsK562_c3.0_cond1.bed
+379 bdgdiff/EZH2-SUZ110vsK562_c3.0_cond1.bed
+
+wc -l bdgdiff/EZH2-EED19vsK562_c3.0_cond1.bed
+4873 bdgdiff/EZH2-EED19vsK562_c3.0_cond1.bed
+
+wc -l bed_files/EZH2-SUZ110_EED19_cond1_overlap.bed
+123 bed_files/EZH2-SUZ110_EED19_cond1_overlap.bed
+```
+
+# look at transcription level of genes w/up peaks vs common peaks
+```{r}
+# annotate common diff peaks
+eed19.common.peaks <- list.files(
+  diff.peaks.dir, 
+  pattern = "-EED19vsK562_c3.0_common.bed", 
+  full.names = TRUE
+  )
+
+# annotate genes to peaksets
+eed19.common.ann <- list()
+file.names <- c("EED-EED19vsK562_common", "EZH2-EED19vsK562_common")
+for(peak.i in 1:length(eed19.common.peaks)){
+  peak.file <- fread(eed19.common.peaks[peak.i], skip = 1)
+  peak.gr <- with(peak.file, GRanges(V1, IRanges(start = V2, end = V3)))
+	seqlevelsStyle(peak.gr) <- "UCSC"
+	anno.peak <- annotatePeak(peak.gr, tssRegion = c(-1000, 1000), TxDb = txdb, annoDb = "org.Hs.eg.db")
+	eed19.common.ann[[peak.i]] <- as.data.frame(anno.peak)
+	
+	# write out each annotation table
+	write.table(
+	  eed19.common.ann[[peak.i]],
+	  file.path(res.dir, paste0(file.names[peak.i], "_peaks_ann.txt")),
+	  sep = "\t",
+	  col.names = TRUE,
+	  row.names = FALSE,
+	  quote = FALSE
+	)
+}
+names(eed19.common.ann) <- file.names
+
+# get unique genes for promoters with common peaks for each mark
+eed.com.prom.peaks <- eed19.common.ann$`EED-EED19vsK562_common`[which(substr(eed19.common.ann$`EED-EED19vsK562_common`$annotation, 1, 8) == "Promoter"), ]
+eed.com.prom.genes <- unique(eed.com.prom.peaks$ENSEMBL)
+
+ezh2.com.prom.peaks <- eed19.common.ann$`EZH2-EED19vsK562_common`[which(substr(eed19.common.ann$`EZH2-EED19vsK562_common`$annotation, 1, 8) == "Promoter"), ]
+ezh2.com.prom.genes <- unique(ezh2.com.prom.peaks$ENSEMBL)
+
+# subset norm counts to these gene sets
+eed.com.gene.counts <- norm.counts[which(norm.counts$V1 %in% eed.com.prom.genes), ]
+ezh2.com.gene.counts <- norm.counts[which(norm.counts$V1 %in% ezh2.com.prom.genes), ]
+
+# make long dataframe of these counts for plotting
+counts.data <- data.frame(
+  "counts" = c(
+    log10(rowMeans(eed.up.gene.counts[, 2:4])), 
+    log10(rowMeans(ezh2.up.gene.counts[, 2:4])),
+    log10(rowMeans(eed.com.gene.counts[, 2:4])), 
+    log10(rowMeans(ezh2.com.gene.counts[, 2:4]))
+    ),
+  "mark" = c(
+    rep("EED", nrow(eed.up.gene.counts)), 
+    rep("EZH2", nrow(ezh2.up.gene.counts)),
+    rep("EED", nrow(eed.com.gene.counts)), 
+    rep("EZH2", nrow(ezh2.com.gene.counts))
+    ),
+  "peakset" = c(
+    rep("up", nrow(eed.up.gene.counts) + nrow(ezh2.up.gene.counts)), 
+    rep("common", nrow(eed.com.gene.counts) + nrow(ezh2.com.gene.counts))
+    )
+)
+
+# make a violin of expression values
+pdf(file.path(plots.dir, "violin_expression_genes_promoter_EED19.pdf"))
+ggplot(counts.data, aes(y = counts, x = peakset, fill = mark)) + 
+  geom_violin(position = "dodge", alpha = 0.8) +
+  scale_fill_manual(values = c("#3c0050", "#FF5000")) +
+  scale_color_manual(values = c("#3c0050", "#FF5000")) +
+  theme_bw()  +
+  xlab("Genes with peaks at promoter") +
+  ylab("log10(normalised counts)")
+dev.off()
+```
+
+# plot EZH2 WT alone over its peaks
+```{bash}
+sbatch ../../scripts/MF07_ChIP/DTMatrix_EZH2_WTonly_K562EZH2peaks_RP_merged.sbatch
+```
+
+# plot MUTvWT up peaks only, ordered on MUT
+```{bash}
+sbatch ../../scripts/MF07_ChIP/DTMatrix_EZH2_SUZ110vK562diffpeaks_UPonly_RP_merged.sbatch
+sbatch ../../scripts/MF07_ChIP/DTMatrix_SUZ12_EZH2-SUZ110vK562diffpeaks_UPonly_RP_ordered.sbatch
+```
+
+# check overlap btw reps of peaks
+```{bash}
+dname=macs/broadpeaks
+
+bedtools intersect -u -wa -wb \
+  -a ${dname}/eed19-2x-eed-r1_S15_peaks.broadPeak \
+  -b ${dname}/eed19-2x-eed-r2_S16_peaks.broadPeak > \
+  bed_files/eed19-2x-eed_rep_overlap.bed
+  
+bedtools intersect -u -wa -wb \
+  -a ${dname}/eed19-ezh2-r1_S10_peaks.broadPeak \
+  -b ${dname}/eed19-ezh2-r2_S12_peaks.broadPeak > \
+  bed_files/eed19-ezh2_rep_overlap.bed
+  
+bedtools intersect -u -wa -wb \
+  -a ${dname}/k562-2x-eed-r1_S13_peaks.broadPeak \
+  -b ${dname}/k562-2x-eed-r2_S14_peaks.broadPeak > \
+  bed_files/k562-2x-eed_rep_overlap.bed
+  
+bedtools intersect -u -wa -wb \
+  -a ${dname}/k562-2x-ezh2-r1_S8_peaks.broadPeak \
+  -b ${dname}/k562-2x-ezh2-r2_S9_peaks.broadPeak > \
+  bed_files/k562-2x-ezh2_rep_overlap.bed
+  
+bedtools intersect -u -wa -wb \
+  -a ${dname}/suz110-ezh2-r1_S25_peaks.broadPeak \
+  -b ${dname}/suz110-ezh2-r2_S26_peaks.broadPeak > \
+  bed_files/suz110-ezh2_rep_overlap.bed
+  
+bedtools intersect -u -wa -wb \
+  -a ${dname}/suz110-ezhip-KO-ezh2-r1_S27_peaks.broadPeak \
+  -b ${dname}/suz110-ezhip-KO-ezh2-r2_S28_peaks.broadPeak > \
+  bed_files/suz110-ezhip-KO-ezh2_rep_overlap.bed
+  
+bedtools intersect -u -wa -wb \
+  -a ${dname}/suz110-ezhip-KO-ezhip-r1_S6_peaks.broadPeak \
+  -b ${dname}/suz110-ezhip-KO-ezhip-r2_S7_peaks.broadPeak > \
+  bed_files/suz110-ezhip-KO-ezhip_rep_overlap.bed
+  
+bedtools intersect -u -wa -wb \
+  -a ${dname}/suz110-ezhip-KO-me3-r1_S23_peaks.broadPeak \
+  -b ${dname}/suz110-ezhip-KO-me3-r2_S24_peaks.broadPeak > \
+  bed_files/suz110-ezhip-KO-me3_rep_overlap.bed
+  
+bedtools intersect -u -wa -wb \
+  -a ${dname}/suz110-ezhip-KO-suz12-r1_S2_peaks.broadPeak \
+  -b ${dname}/suz110-ezhip-KO-suz12-r2_S3_peaks.broadPeak > \
+  bed_files/suz110-ezhip-KO-suz12_rep_overlap.bed
+  
+bedtools intersect -u -wa -wb \
+  -a ${dname}/suz110-ezhip-r1_S4_peaks.broadPeak \
+  -b ${dname}/suz110-ezhip-r2_S5_peaks.broadPeak > \
+  bed_files/suz110-ezhip_rep_overlap.bed
+  
+bedtools intersect -u -wa -wb \
+  -a ${dname}/suz110-me3-r1_S11_peaks.broadPeak \
+  -b ${dname}/suz110-me3-r2_S22_peaks.broadPeak > \
+  bed_files/suz110-me3_rep_overlap.bed
+  
+bedtools intersect -u -wa -wb \
+  -a ${dname}/suz110-suz12-r1_S29_peaks.broadPeak \
+  -b ${dname}/suz110-suz12-r2_S1_peaks.broadPeak > \
+  bed_files/suz110-suz12_rep_overlap.bed
+  
+for ovlp in bed_files/*_rep_overlap.bed 
+do 
+wc -l $ovlp 
+done
+5974 bed_files/eed19-2x-eed_rep_overlap.bed
+7240 bed_files/eed19-ezh2_rep_overlap.bed
+309 bed_files/k562-2x-eed_rep_overlap.bed
+528 bed_files/k562-2x-ezh2_rep_overlap.bed
+668 bed_files/suz110-ezh2_rep_overlap.bed
+916 bed_files/suz110-ezhip-KO-ezh2_rep_overlap.bed
+0 bed_files/suz110-ezhip-KO-ezhip_rep_overlap.bed
+116 bed_files/suz110-ezhip-KO-me3_rep_overlap.bed
+1670 bed_files/suz110-ezhip-KO-suz12_rep_overlap.bed
+1038 bed_files/suz110-ezhip_rep_overlap.bed
+222 bed_files/suz110-me3_rep_overlap.bed
+892 bed_files/suz110-suz12_rep_overlap.bed
+
+# other than me & EHZIPKO-EZHIP, there is around 80% of smaller rep peaks overlap
+```
+
+
+# save session info
+```{r}
+sesh.info <- capture.output(sessionInfo())
+writeLines(
+  sesh.info,
+  file.path(project.dir, "session-info", paste0(Sys.Date(), "_ChIP_251013.txt"))
+)
+```
